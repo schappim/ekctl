@@ -9,8 +9,8 @@ struct Ekctl: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ekctl",
         abstract: "A command-line tool for managing macOS Calendar events and Reminders using EventKit.",
-        version: "1.0.0",
-        subcommands: [List.self, Show.self, Add.self, Delete.self, Complete.self],
+        version: "1.1.0",
+        subcommands: [List.self, Show.self, Add.self, Delete.self, Complete.self, Alias.self],
         defaultSubcommand: List.self
     )
 }
@@ -44,7 +44,7 @@ struct ListEvents: ParsableCommand {
         abstract: "List events in a calendar within a date range."
     )
 
-    @Option(name: .long, help: "The calendar ID to list events from.")
+    @Option(name: .long, help: "The calendar ID or alias.")
     var calendar: String
 
     @Option(name: .long, help: "Start date in ISO8601 format (e.g., 2026-02-01T00:00:00Z).")
@@ -66,7 +66,8 @@ struct ListEvents: ParsableCommand {
             throw ExitCode.failure
         }
 
-        let result = manager.listEvents(calendarID: calendar, from: startDate, to: endDate)
+        let calendarID = ConfigManager.resolveAlias(calendar)
+        let result = manager.listEvents(calendarID: calendarID, from: startDate, to: endDate)
         print(result.toJSON())
     }
 }
@@ -77,7 +78,7 @@ struct ListReminders: ParsableCommand {
         abstract: "List reminders in a reminder list."
     )
 
-    @Option(name: .long, help: "The reminder list ID.")
+    @Option(name: .long, help: "The reminder list ID or alias.")
     var list: String
 
     @Option(name: .long, help: "Filter by completion status (true/false).")
@@ -86,7 +87,8 @@ struct ListReminders: ParsableCommand {
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
-        let result = manager.listReminders(listID: list, completed: completed)
+        let listID = ConfigManager.resolveAlias(list)
+        let result = manager.listReminders(listID: listID, completed: completed)
         print(result.toJSON())
     }
 }
@@ -149,7 +151,7 @@ struct AddEvent: ParsableCommand {
         abstract: "Create a new calendar event."
     )
 
-    @Option(name: .long, help: "The calendar ID to add the event to.")
+    @Option(name: .long, help: "The calendar ID or alias.")
     var calendar: String
 
     @Option(name: .long, help: "The event title.")
@@ -183,8 +185,9 @@ struct AddEvent: ParsableCommand {
             throw ExitCode.failure
         }
 
+        let calendarID = ConfigManager.resolveAlias(calendar)
         let result = manager.addEvent(
-            calendarID: calendar,
+            calendarID: calendarID,
             title: title,
             startDate: startDate,
             endDate: endDate,
@@ -202,7 +205,7 @@ struct AddReminder: ParsableCommand {
         abstract: "Create a new reminder."
     )
 
-    @Option(name: .long, help: "The reminder list ID.")
+    @Option(name: .long, help: "The reminder list ID or alias.")
     var list: String
 
     @Option(name: .long, help: "The reminder title.")
@@ -230,8 +233,9 @@ struct AddReminder: ParsableCommand {
             dueDate = parsed
         }
 
+        let listID = ConfigManager.resolveAlias(list)
         let result = manager.addReminder(
-            listID: list,
+            listID: listID,
             title: title,
             dueDate: dueDate,
             priority: priority ?? 0,
@@ -307,5 +311,94 @@ struct CompleteReminder: ParsableCommand {
         try manager.requestAccess()
         let result = manager.completeReminder(reminderID: reminderID)
         print(result.toJSON())
+    }
+}
+
+// MARK: - Alias Commands
+
+struct Alias: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Manage calendar and reminder list aliases.",
+        subcommands: [AliasSet.self, AliasRemove.self, AliasList.self]
+    )
+}
+
+struct AliasSet: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "set",
+        abstract: "Create or update an alias for a calendar or reminder list."
+    )
+
+    @Argument(help: "The alias name (e.g., 'work', 'personal', 'groceries').")
+    var name: String
+
+    @Argument(help: "The calendar or reminder list ID.")
+    var id: String
+
+    func run() throws {
+        do {
+            try ConfigManager.setAlias(name: name, id: id)
+            print(JSONOutput.success([
+                "status": "success",
+                "message": "Alias '\(name)' set successfully",
+                "alias": [
+                    "name": name,
+                    "id": id
+                ]
+            ]).toJSON())
+        } catch {
+            print(JSONOutput.error("Failed to save alias: \(error.localizedDescription)").toJSON())
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct AliasRemove: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "remove",
+        abstract: "Remove an alias."
+    )
+
+    @Argument(help: "The alias name to remove.")
+    var name: String
+
+    func run() throws {
+        do {
+            let removed = try ConfigManager.removeAlias(name: name)
+            if removed {
+                print(JSONOutput.success([
+                    "status": "success",
+                    "message": "Alias '\(name)' removed successfully"
+                ]).toJSON())
+            } else {
+                print(JSONOutput.error("Alias '\(name)' not found").toJSON())
+                throw ExitCode.failure
+            }
+        } catch let error where !(error is ExitCode) {
+            print(JSONOutput.error("Failed to remove alias: \(error.localizedDescription)").toJSON())
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct AliasList: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List all configured aliases."
+    )
+
+    func run() throws {
+        let aliases = ConfigManager.getAliases()
+        var aliasList: [[String: String]] = []
+
+        for (name, id) in aliases.sorted(by: { $0.key < $1.key }) {
+            aliasList.append(["name": name, "id": id])
+        }
+
+        print(JSONOutput.success([
+            "aliases": aliasList,
+            "count": aliasList.count,
+            "configPath": ConfigManager.configPath()
+        ]).toJSON())
     }
 }

@@ -6,6 +6,7 @@ A native macOS command-line tool for managing Calendar events and Reminders usin
 
 - List, create, and delete calendar events
 - List, create, complete, and delete reminders
+- **Calendar aliases** - Use friendly names instead of long IDs
 - JSON output for easy parsing and scripting
 - Full EventKit integration with proper permission handling
 - Support for all calendar and reminder list types (iCloud, Exchange, local, etc.)
@@ -83,14 +84,66 @@ Output:
 }
 ```
 
+### Calendar Aliases
+
+Instead of using long calendar IDs, you can create friendly aliases:
+
+```bash
+# Set an alias for a calendar
+ekctl alias set work "CA513B39-1659-4359-8FE9-0C2A3DCEF153"
+ekctl alias set personal "4E367C6F-354B-4811-935E-7F25A1BB7D39"
+ekctl alias set groceries "E30AE972-8F29-40AF-BFB9-E984B98B08AB"
+
+# List all aliases
+ekctl alias list
+
+# Remove an alias
+ekctl alias remove work
+```
+
+Output for `ekctl alias list`:
+```json
+{
+  "aliases": [
+    { "name": "groceries", "id": "E30AE972-8F29-40AF-BFB9-E984B98B08AB" },
+    { "name": "personal", "id": "4E367C6F-354B-4811-935E-7F25A1BB7D39" },
+    { "name": "work", "id": "CA513B39-1659-4359-8FE9-0C2A3DCEF153" }
+  ],
+  "count": 3,
+  "configPath": "/Users/you/.ekctl/config.json",
+  "status": "success"
+}
+```
+
+Once set, use aliases anywhere you would use a calendar ID:
+
+```bash
+# These are equivalent:
+ekctl list events --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" --from ...
+ekctl list events --calendar work --from ...
+
+# Works with all commands
+ekctl add event --calendar work --title "Meeting" --start ...
+ekctl list reminders --list groceries
+ekctl add reminder --list personal --title "Call mom"
+```
+
+Aliases are stored in `~/.ekctl/config.json`.
+
 ### List Events
 
 List events in a calendar within a date range:
 
 ```bash
-# List events for January 2026
+# Using calendar ID
 ekctl list events \
   --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" \
+  --from "2026-01-01T00:00:00Z" \
+  --to "2026-01-31T23:59:59Z"
+
+# Or using an alias (after setting one)
+ekctl list events \
+  --calendar work \
   --from "2026-01-01T00:00:00Z" \
   --to "2026-01-31T23:59:59Z"
 ```
@@ -131,23 +184,23 @@ ekctl show event "ABC123:DEF456"
 Create a new calendar event:
 
 ```bash
-# Basic event
+# Basic event (using alias)
 ekctl add event \
-  --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" \
+  --calendar work \
   --title "Lunch with Client" \
   --start "2026-02-10T12:30:00Z" \
   --end "2026-02-10T13:30:00Z"
 
 # Event with location and notes
 ekctl add event \
-  --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" \
+  --calendar work \
   --title "Project Review" \
   --start "2026-02-15T14:00:00Z" \
   --end "2026-02-15T15:30:00Z" \
   --location "Building 2, Room 301" \
   --notes "Bring Q1 reports"
 
-# All-day event
+# All-day event (using full ID also works)
 ekctl add event \
   --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" \
   --title "Company Holiday" \
@@ -197,13 +250,13 @@ Output:
 List reminders in a reminder list:
 
 ```bash
-# List all reminders
-ekctl list reminders --list "4E367C6F-354B-4811-935E-7F25A1BB7D39"
+# List all reminders (using alias)
+ekctl list reminders --list personal
 
 # List only incomplete reminders
-ekctl list reminders --list "4E367C6F-354B-4811-935E-7F25A1BB7D39" --completed false
+ekctl list reminders --list personal --completed false
 
-# List only completed reminders
+# List only completed reminders (using full ID also works)
 ekctl list reminders --list "4E367C6F-354B-4811-935E-7F25A1BB7D39" --completed true
 ```
 
@@ -240,22 +293,22 @@ ekctl show reminder "REM123-456-789"
 Create a new reminder:
 
 ```bash
-# Simple reminder (no due date)
+# Simple reminder (using alias)
 ekctl add reminder \
-  --list "4E367C6F-354B-4811-935E-7F25A1BB7D39" \
+  --list personal \
   --title "Call the dentist"
 
 # Reminder with due date
 ekctl add reminder \
-  --list "4E367C6F-354B-4811-935E-7F25A1BB7D39" \
+  --list personal \
   --title "Submit expense report" \
   --due "2026-01-25T09:00:00Z"
 
 # Reminder with priority and notes
 # Priority: 0=none, 1=high, 5=medium, 9=low
 ekctl add reminder \
-  --list "4E367C6F-354B-4811-935E-7F25A1BB7D39" \
-  --title "Renew passport" \
+  --list groceries \
+  --title "Buy milk" \
   --due "2026-02-01T12:00:00Z" \
   --priority 1 \
   --notes "Check expiration date first"
