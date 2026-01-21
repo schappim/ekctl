@@ -22,7 +22,7 @@ A native macOS command-line tool for managing Calendar events and Reminders usin
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/ekctl.git
+git clone https://github.com/schappim/ekctl.git
 cd ekctl
 
 # Build release version
