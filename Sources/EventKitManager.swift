@@ -330,9 +330,17 @@ class EventKitManager {
 
     // MARK: - Helper Methods
 
+    /// Creates a date formatter that outputs ISO 8601 format in the user's local timezone
+    private func localDateFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"  // ISO 8601 with timezone offset
+        formatter.timeZone = TimeZone.current
+        return formatter
+    }
+
     /// Converts an EKEvent to a dictionary for JSON output
     private func eventToDict(_ event: EKEvent) -> [String: Any] {
-        let formatter = ISO8601DateFormatter()
+        let formatter = localDateFormatter()
 
         var dict: [String: Any] = [
             "id": event.eventIdentifier ?? "",
@@ -372,7 +380,7 @@ class EventKitManager {
 
     /// Converts an EKReminder to a dictionary for JSON output
     private func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
-        let formatter = ISO8601DateFormatter()
+        let formatter = localDateFormatter()
 
         var dict: [String: Any] = [
             "id": reminder.calendarItemIdentifier,

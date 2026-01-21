@@ -34,3 +34,8 @@ DerivedData/
 *.swp
 *.swo
 *~
+
+# Build artifacts
+*.d
+*.o
+*.swiftdeps
