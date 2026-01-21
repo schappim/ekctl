@@ -9,7 +9,7 @@ struct Ekctl: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ekctl",
         abstract: "A command-line tool for managing macOS Calendar events and Reminders using EventKit.",
-        version: "1.1.0",
+        version: "1.2.0",
         subcommands: [List.self, Show.self, Add.self, Delete.self, Complete.self, Alias.self],
         defaultSubcommand: List.self
     )
