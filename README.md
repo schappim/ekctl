@@ -1,15 +1,15 @@
 # ekctl
 
-A native macOS command-line tool for managing Calendar events and Reminders using the EventKit framework. All output is JSON, making it perfect for scripting and automation.
+Native macOS command-line tool for managing Calendar events and Reminders using EventKit. All output is JSON for scripting and automation.
 
 ## Features
 
-- List, create, and delete calendar events
+- List, create, update, and delete calendar events
 - List, create, complete, and delete reminders
-- **Calendar aliases** - Use friendly names instead of long IDs
-- JSON output for easy parsing and scripting
+- Calendar aliases (use friendly names instead of UUIDs)
+- JSON output for parsing
 - Full EventKit integration with proper permission handling
-- Support for all calendar and reminder list types (iCloud, Exchange, local, etc.)
+- Support for iCloud, Exchange, and local calendars
 
 ## Requirements
 
@@ -19,47 +19,41 @@ A native macOS command-line tool for managing Calendar events and Reminders usin
 
 ## Installation
 
-### Homebrew (Recommended)
+### Homebrew
 
 ```bash
 brew tap schappim/ekctl
 brew install ekctl
 ```
 
-### Build from Source
+### Build from source
 
 ```bash
-# Clone the repository
 git clone https://github.com/schappim/ekctl.git
 cd ekctl
-
-# Build release version
 swift build -c release
 
-# Optional: Sign with entitlements for better permission handling
+# Optional: Sign with entitlements
 codesign --force --sign - --entitlements ekctl.entitlements .build/release/ekctl
 
-# Install to /usr/local/bin
+# Install
 sudo cp .build/release/ekctl /usr/local/bin/
 ```
 
-### First Run
+### Permissions
 
-On first run, macOS will prompt you to grant access to Calendars and Reminders. You can manage these permissions later in:
+On first run, macOS will prompt for Calendar and Reminders access. Manage permissions in **System Settings → Privacy & Security → Calendars / Reminders**.
 
-**System Settings → Privacy & Security → Calendars / Reminders**
+## Calendars
 
-## Usage
+### List
 
-### List Calendars
-
-List all calendars (event calendars and reminder lists):
-
+**Command:**
 ```bash
 ekctl list calendars
 ```
 
-Output:
+**Output:**
 ```json
 {
   "calendars": [
@@ -70,85 +64,72 @@ Output:
       "source": "iCloud",
       "color": "#0088FF",
       "allowsModifications": true
-    },
-    {
-      "id": "4E367C6F-354B-4811-935E-7F25A1BB7D39",
-      "title": "Reminders",
-      "type": "reminder",
-      "source": "iCloud",
-      "color": "#1BADF8",
-      "allowsModifications": true
     }
   ],
   "status": "success"
 }
 ```
 
-### Calendar Aliases
+### Create
 
-Instead of using long calendar IDs, you can create friendly aliases:
-
+**Command:**
 ```bash
-# Set an alias for a calendar
+ekctl calendar create --title "Project X" --color "#FF5500"
+```
+
+### Update
+
+**Command:**
+```bash
+ekctl calendar update CALENDAR_ID --title "New Name" --color "#00FF00"
+```
+
+### Delete
+
+**Command:**
+```bash
+ekctl calendar delete CALENDAR_ID
+```
+
+### Aliases
+
+Use friendly names instead of UUIDs. Aliases work anywhere a calendar ID is accepted.
+
+**Set alias:**
+```bash
 ekctl alias set work "CA513B39-1659-4359-8FE9-0C2A3DCEF153"
 ekctl alias set personal "4E367C6F-354B-4811-935E-7F25A1BB7D39"
-ekctl alias set groceries "E30AE972-8F29-40AF-BFB9-E984B98B08AB"
+```
 
-# List all aliases
+**List aliases:**
+```bash
 ekctl alias list
+```
 
-# Remove an alias
+**Remove alias:**
+```bash
 ekctl alias remove work
 ```
 
-Output for `ekctl alias list`:
-```json
-{
-  "aliases": [
-    { "name": "groceries", "id": "E30AE972-8F29-40AF-BFB9-E984B98B08AB" },
-    { "name": "personal", "id": "4E367C6F-354B-4811-935E-7F25A1BB7D39" },
-    { "name": "work", "id": "CA513B39-1659-4359-8FE9-0C2A3DCEF153" }
-  ],
-  "count": 3,
-  "configPath": "/Users/you/.ekctl/config.json",
-  "status": "success"
-}
-```
-
-Once set, use aliases anywhere you would use a calendar ID:
-
+**Usage:**
 ```bash
 # These are equivalent:
-ekctl list events --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" --from ...
-ekctl list events --calendar work --from ...
-
-# Works with all commands
-ekctl add event --calendar work --title "Meeting" --start ...
-ekctl list reminders --list groceries
-ekctl add reminder --list personal --title "Call mom"
+ekctl list events --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" --from "2026-01-01T00:00:00Z" --to "2026-01-31T23:59:59Z"
+ekctl list events --calendar work --from "2026-01-01T00:00:00Z" --to "2026-01-31T23:59:59Z"
 ```
 
 Aliases are stored in `~/.ekctl/config.json`.
 
-### List Events
+## Events
 
-List events in a calendar within a date range:
+### List
 
+**Command:**
 ```bash
-# Using calendar ID
-ekctl list events \
-  --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" \
-  --from "2026-01-01T00:00:00Z" \
-  --to "2026-01-31T23:59:59Z"
-
-# Or using an alias (after setting one)
-ekctl list events \
-  --calendar work \
-  --from "2026-01-01T00:00:00Z" \
-  --to "2026-01-31T23:59:59Z"
+ekctl list events --calendar work --from "2026-01-01T00:00:00Z" --to "2026-01-31T23:59:59Z"
 ```
 
-Output:
+**Output:**
 ```json
 {
   "count": 2,
@@ -173,50 +154,63 @@ Output:
 }
 ```
 
-### Show Event Details
+### Show
 
+**Command:**
 ```bash
-ekctl show event "ABC123:DEF456"
+ekctl show event EVENT_ID
 ```
 
-### Add Event
+### Add
 
-Create a new calendar event:
-
+Basic event:
 ```bash
-# Basic event (using alias)
-ekctl add event \
-  --calendar work \
-  --title "Lunch with Client" \
-  --start "2026-02-10T12:30:00Z" \
-  --end "2026-02-10T13:30:00Z"
+ekctl add event --calendar work --title "Lunch" --start "2026-02-10T12:30:00Z" --end "2026-02-10T13:30:00Z"
+```
 
-# Event with location and notes
+With location, notes, and alarms:
+```bash
 ekctl add event \
   --calendar work \
   --title "Project Review" \
   --start "2026-02-15T14:00:00Z" \
   --end "2026-02-15T15:30:00Z" \
   --location "Building 2, Room 301" \
-  --notes "Bring Q1 reports"
-
-# All-day event (using full ID also works)
-ekctl add event \
-  --calendar "CA513B39-1659-4359-8FE9-0C2A3DCEF153" \
-  --title "Company Holiday" \
-  --start "2026-03-01T00:00:00Z" \
-  --end "2026-03-02T00:00:00Z" \
-  --all-day
+  --notes "Bring Q1 reports" \
+  --alarms "10,60"
 ```
 
-Output:
+Recurring event (weekly):
+```bash
+ekctl add event \
+  --calendar personal \
+  --title "Gym" \
+  --start "2026-02-12T18:00:00Z" \
+  --end "2026-02-12T19:00:00Z" \
+  --recurrence-frequency weekly \
+  --recurrence-days "mon,wed,fri" \
+  --recurrence-end-count 20
+```
+
+With travel time:
+```bash
+ekctl add event \
+  --calendar work \
+  --title "Client Site Visit" \
+  --start "2026-02-20T14:00:00Z" \
+  --end "2026-02-20T16:00:00Z" \
+  --location "1 Infinite Loop, Cupertino, CA" \
+  --travel-time 30
+```
+
+**Output:**
 ```json
 {
   "status": "success",
   "message": "Event created successfully",
   "event": {
     "id": "NEW123:EVENT456",
-    "title": "Lunch with Client",
+    "title": "Lunch",
     "calendar": {
       "id": "CA513B39-1659-4359-8FE9-0C2A3DCEF153",
       "title": "Work"
@@ -230,13 +224,14 @@ Output:
 }
 ```
 
-### Delete Event
+### Delete
 
+**Command:**
 ```bash
-ekctl delete event "ABC123:DEF456"
+ekctl delete event EVENT_ID
 ```
 
-Output:
+**Output:**
 ```json
 {
   "status": "success",
@@ -245,22 +240,26 @@ Output:
 }
 ```
 
-### List Reminders
+## Reminders
 
-List reminders in a reminder list:
+### List
 
+All reminders:
 ```bash
-# List all reminders (using alias)
 ekctl list reminders --list personal
-
-# List only incomplete reminders
-ekctl list reminders --list personal --completed false
-
-# List only completed reminders (using full ID also works)
-ekctl list reminders --list "4E367C6F-354B-4811-935E-7F25A1BB7D39" --completed true
 ```
 
-Output:
+Only incomplete:
+```bash
+ekctl list reminders --list personal --completed false
+```
+
+Only completed:
+```bash
+ekctl list reminders --list personal --completed true
+```
+
+**Output:**
 ```json
 {
   "count": 2,
@@ -282,39 +281,36 @@ Output:
 }
 ```
 
-### Show Reminder Details
+### Show
 
+**Command:**
 ```bash
-ekctl show reminder "REM123-456-789"
+ekctl show reminder REMINDER_ID
 ```
 
-### Add Reminder
+### Add
 
-Create a new reminder:
-
+Simple reminder:
 ```bash
-# Simple reminder (using alias)
-ekctl add reminder \
-  --list personal \
-  --title "Call the dentist"
+ekctl add reminder --list personal --title "Call dentist"
+```
 
-# Reminder with due date
-ekctl add reminder \
-  --list personal \
-  --title "Submit expense report" \
-  --due "2026-01-25T09:00:00Z"
+With due date:
+```bash
+ekctl add reminder --list personal --title "Submit expense report" --due "2026-01-25T09:00:00Z"
+```
 
-# Reminder with priority and notes
-# Priority: 0=none, 1=high, 5=medium, 9=low
+With priority and notes (priority: 0=none, 1=high, 5=medium, 9=low):
+```bash
 ekctl add reminder \
   --list groceries \
   --title "Buy milk" \
   --due "2026-02-01T12:00:00Z" \
   --priority 1 \
-  --notes "Check expiration date first"
+  --notes "Check expiration date"
 ```
 
-Output:
+**Output:**
 ```json
 {
   "status": "success",
@@ -334,15 +330,14 @@ Output:
 }
 ```
 
-### Complete Reminder
+### Complete
 
-Mark a reminder as completed:
-
+**Command:**
 ```bash
-ekctl complete reminder "REM123-456-789"
+ekctl complete reminder REMINDER_ID
 ```
 
-Output:
+**Output:**
 ```json
 {
   "status": "success",
@@ -356,78 +351,16 @@ Output:
 }
 ```
 
-### Delete Reminder
+### Delete
 
+**Command:**
 ```bash
-ekctl delete reminder "REM123-456-789"
-```
-
-## Date Format
-
-All dates use **ISO 8601** format with timezone. Examples:
-
-| Format | Example | Description |
-|--------|---------|-------------|
-| UTC | `2026-01-15T09:00:00Z` | 9:00 AM UTC |
-| With offset | `2026-01-15T09:00:00+10:00` | 9:00 AM AEST |
-| Midnight | `2026-01-15T00:00:00Z` | Start of day |
-| End of day | `2026-01-15T23:59:59Z` | End of day |
-
-## Scripting Examples
-
-### Get calendar ID by name
-
-```bash
-# Using jq to find a calendar by name
-CALENDAR_ID=$(ekctl list calendars | jq -r '.calendars[] | select(.title == "Work") | .id')
-echo $CALENDAR_ID
-```
-
-### List today's events
-
-```bash
-TODAY=$(date -u +"%Y-%m-%dT00:00:00Z")
-TOMORROW=$(date -u -v+1d +"%Y-%m-%dT00:00:00Z")
-
-ekctl list events \
-  --calendar "$CALENDAR_ID" \
-  --from "$TODAY" \
-  --to "$TOMORROW"
-```
-
-### Create event from variables
-
-```bash
-TITLE="Sprint Planning"
-START="2026-01-20T10:00:00Z"
-END="2026-01-20T11:00:00Z"
-
-ekctl add event \
-  --calendar "$CALENDAR_ID" \
-  --title "$TITLE" \
-  --start "$START" \
-  --end "$END"
-```
-
-### Count incomplete reminders
-
-```bash
-ekctl list reminders --list "$LIST_ID" --completed false | jq '.count'
-```
-
-### Export events to CSV
-
-```bash
-ekctl list events \
-  --calendar "$CALENDAR_ID" \
-  --from "2026-01-01T00:00:00Z" \
-  --to "2026-12-31T23:59:59Z" \
-  | jq -r '.events[] | [.title, .startDate, .endDate, .location // ""] | @csv'
+ekctl delete reminder REMINDER_ID
 ```
 
 ## Error Handling
 
-When an error occurs, the output includes an error message:
+All errors return JSON with `status: "error"`:
 
 ```json
 {
@@ -437,19 +370,16 @@ When an error occurs, the output includes an error message:
 ```
 
 Common errors:
-- `Permission denied` - Grant access in System Settings
-- `Calendar not found` - Check the calendar ID with `list calendars`
-- `Invalid date format` - Use ISO 8601 format (see examples above)
+- `Permission denied`: Grant access in System Settings → Privacy & Security → Calendars/Reminders
+- `Calendar not found`: Check calendar ID with `ekctl list calendars`
+- `Invalid date format`: Use ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)
 
 ## Help
-
-Get help for any command:
 
 ```bash
 ekctl --help
 ekctl list --help
 ekctl add event --help
-ekctl list reminders --help
 ```
 
 ## License
@@ -458,4 +388,4 @@ MIT License
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Pull requests welcome.

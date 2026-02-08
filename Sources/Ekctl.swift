@@ -9,8 +9,8 @@ struct Ekctl: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ekctl",
         abstract: "A command-line tool for managing macOS Calendar events and Reminders using EventKit.",
-        version: "1.2.0",
-        subcommands: [List.self, Show.self, Add.self, Delete.self, Complete.self, Alias.self],
+        version: "1.3.0",
+        subcommands: [List.self, Show.self, Add.self, Update.self, Delete.self, Complete.self, Alias.self, CalendarCmd.self],
         defaultSubcommand: List.self
     )
 }
@@ -172,6 +172,52 @@ struct AddEvent: ParsableCommand {
     @Flag(name: .long, help: "Mark as all-day event.")
     var allDay: Bool = false
 
+    // MARK: - Recurrence & Travel Time
+
+    @Option(name: .long, help: "Recurrence frequency (daily, weekly, monthly).")
+    var recurrenceFrequency: String?
+
+    @Option(name: .long, help: "Recurrence interval (default: 1).")
+    var recurrenceInterval: String?
+
+    @Option(name: .long, help: "Recurrence end count.")
+    var recurrenceEndCount: String?
+
+    @Option(name: .long, help: "Recurrence end date in ISO8601 format.")
+    var recurrenceEndDate: String?
+
+    @Option(name: .long, help: "Days of week (e.g., 'mon,tue', '1mon' for 1st Monday, '-1fri' for last Friday).")
+    var recurrenceDays: String?
+
+    @Option(name: .long, help: "Months of the year (comma-separated: 1-12 or jan,feb...).")
+    var recurrenceMonths: String?
+
+    @Option(name: .long, help: "Days of the month (comma-separated: 1-31 or -1 for last).")
+    var recurrenceDaysOfMonth: String?
+
+    @Option(name: .long, help: "Weeks of the year (comma-separated: 1-53 or -1 for last).")
+    var recurrenceWeeksOfYear: String?
+
+    @Option(name: .long, help: "Days of the year (comma-separated: 1-366 or -1 for last).")
+    var recurrenceDaysOfYear: String?
+
+    @Option(name: .long, help: "Set positions (comma-separated: 1 for 1st, -1 for last, etc.).")
+    var recurrenceSetPositions: String?
+
+    @Option(name: .long, help: "Travel time in minutes.")
+    var travelTime: String?
+
+    // MARK: - New Features (Alarms, Availability, URL, etc.)
+
+    @Option(name: .long, help: "Alarms/Alerts relative to start time in minutes (e.g., '-30,-60').")
+    var alarms: String?
+
+    @Option(name: .long, help: "URL for the event.")
+    var url: String?
+
+    @Option(name: .long, help: "Availability (busy, free, tentative, unavailable).")
+    var availability: String?
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
@@ -185,6 +231,56 @@ struct AddEvent: ParsableCommand {
             throw ExitCode.failure
         }
 
+        var rEndDate: Date?
+        if let recEndDateString = recurrenceEndDate, !recEndDateString.isEmpty {
+            guard let date = ISO8601DateFormatter().date(from: recEndDateString) else {
+                print(JSONOutput.error("Invalid --recurrence-end-date format. Use ISO8601.").toJSON())
+                throw ExitCode.failure
+            }
+            rEndDate = date
+        }
+        
+        // Parse recurrence interval (default to 1)
+        let recurrenceIntervalInt = (recurrenceInterval.flatMap(Int.init)) ?? 1
+        
+        let recurrenceEndCountInt = recurrenceEndCount.flatMap(Int.init)
+        
+        // Convert travel time to seconds if provided and valid
+        var travelTimeSeconds: TimeInterval?
+        if let ttString = travelTime, let ttInt = Int(ttString) {
+            travelTimeSeconds = TimeInterval(ttInt * 60)
+        }
+
+        // Helper to parse comma-separated integers
+        func parseInts(_ string: String?) -> [NSNumber]? {
+            guard let string = string else { return nil }
+            return string.split(separator: ",").compactMap { 
+                Int($0.trimmingCharacters(in: .whitespaces)).map { NSNumber(value: $0) } 
+            }
+        }
+        
+        // Helper to parse months (names or numbers)
+        func parseMonths(_ string: String?) -> [NSNumber]? {
+            guard let string = string else { return nil }
+            let monthMap: [String: Int] = [
+                "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+                "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6,
+                "jul": 7, "july": 7, "aug": 8, "august": 8, "sep": 9, "september": 9,
+                "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12
+            ]
+            
+            return string.split(separator: ",").compactMap { component in
+                let trimmed = component.trimmingCharacters(in: .whitespaces).lowercased()
+                if let val = Int(trimmed) { return NSNumber(value: val) }
+                if let val = monthMap[trimmed] { return NSNumber(value: val) }
+                return nil
+            }
+        }
+        
+        let alarmsList = alarms?.split(separator: ",").compactMap { 
+            Double($0.trimmingCharacters(in: .whitespaces)).map { $0 * -60 } 
+        }
+
         let calendarID = ConfigManager.resolveAlias(calendar)
         let result = manager.addEvent(
             calendarID: calendarID,
@@ -193,7 +289,21 @@ struct AddEvent: ParsableCommand {
             endDate: endDate,
             location: location,
             notes: notes,
-            allDay: allDay
+            allDay: allDay,
+            recurrenceFrequency: recurrenceFrequency,
+            recurrenceInterval: recurrenceIntervalInt,
+            recurrenceEndCount: recurrenceEndCountInt,
+            recurrenceEndDate: rEndDate,
+            recurrenceDays: recurrenceDays,
+            recurrenceMonths: parseMonths(recurrenceMonths),
+            recurrenceDaysOfMonth: parseInts(recurrenceDaysOfMonth),
+            recurrenceWeeksOfYear: parseInts(recurrenceWeeksOfYear),
+            recurrenceDaysOfYear: parseInts(recurrenceDaysOfYear),
+            recurrenceSetPositions: parseInts(recurrenceSetPositions),
+            travelTime: travelTimeSeconds,
+            alarms: alarmsList,
+            url: url,
+            availability: availability
         )
         print(result.toJSON())
     }
@@ -215,7 +325,7 @@ struct AddReminder: ParsableCommand {
     var due: String?
 
     @Option(name: .long, help: "Priority (0=none, 1=high, 5=medium, 9=low).")
-    var priority: Int?
+    var priority: String?
 
     @Option(name: .long, help: "Optional notes.")
     var notes: String?
@@ -233,19 +343,188 @@ struct AddReminder: ParsableCommand {
             dueDate = parsed
         }
 
+        // Parse priority
+        let priorityInt = (priority.flatMap(Int.init)) ?? 0
+
         let listID = ConfigManager.resolveAlias(list)
         let result = manager.addReminder(
             listID: listID,
             title: title,
             dueDate: dueDate,
-            priority: priority ?? 0,
+            priority: priorityInt,
             notes: notes
         )
         print(result.toJSON())
     }
 }
 
-// MARK: - Delete Commands
+// MARK: - Update Command
+
+struct Update: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Update an existing event.",
+        subcommands: [UpdateEvent.self]
+    )
+}
+
+struct UpdateEvent: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "event",
+        abstract: "Update a calendar event."
+    )
+
+    @Argument(help: "The event ID to update.")
+    var eventID: String
+
+    @Option(name: .long, help: "New title.")
+    var title: String?
+
+    @Option(name: .long, help: "New start date (ISO8601).")
+    var start: String?
+
+    @Option(name: .long, help: "New end date (ISO8601).")
+    var end: String?
+
+    @Option(name: .long, help: "New location.")
+    var location: String?
+
+    @Option(name: .long, help: "New notes.")
+    var notes: String?
+
+    @Option(name: .long, help: "Mark as all-day event (true/false).")
+    var allDay: Bool?
+
+    @Option(name: .long, help: "New URL.")
+    var url: String?
+
+    @Option(name: .long, help: "New availability (busy, free, tentative, unavailable).")
+    var availability: String?
+
+    @Option(name: .long, help: "Travel time in minutes.")
+    var travelTime: String?
+
+    @Option(name: .long, help: "Alarms relative to start (minutes). Replaces existing alarms.")
+    var alarms: String?
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+
+        var startDate: Date?
+        if let start = start {
+             guard let da = ISO8601DateFormatter().date(from: start) else {
+                 throw ExitCode.failure
+             }
+             startDate = da
+        }
+        var endDate: Date?
+        if let end = end {
+             guard let da = ISO8601DateFormatter().date(from: end) else {
+                 throw ExitCode.failure
+             }
+             endDate = da
+        }
+        
+        let alarmsList = alarms?.split(separator: ",").compactMap { 
+            Double($0.trimmingCharacters(in: .whitespaces)).map { $0 * -60 } 
+        }
+
+        var travelTimeSeconds: TimeInterval?
+        if let ttString = travelTime, let ttInt = Int(ttString) {
+            travelTimeSeconds = TimeInterval(ttInt * 60)
+        }
+
+        let result = manager.updateEvent(
+            eventID: eventID,
+            title: title,
+            startDate: startDate,
+            endDate: endDate,
+            location: location,
+            notes: notes,
+            allDay: allDay,
+            url: url,
+            availability: availability,
+            travelTime: travelTimeSeconds,
+            alarms: alarmsList
+        )
+        print(result.toJSON())
+    }
+}
+
+// MARK: - C
+
+struct CalendarCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "calendar",
+        abstract: "Manage calendars.",
+        subcommands: [CreateCalendar.self, UpdateCalendar.self, DeleteCalendar.self]
+    )
+}
+
+struct CreateCalendar: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "create",
+        abstract: "Create a new calendar."
+    )
+
+    @Option(name: .long, help: "Title of the new calendar.")
+    var title: String
+
+    @Option(name: .long, help: "Color hex code (e.g. #FF0000).")
+    var color: String?
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+        let result = manager.createCalendar(title: title, color: color)
+        print(result.toJSON())
+    }
+}
+
+struct UpdateCalendar: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "update",
+        abstract: "Update a calendar."
+    )
+
+    @Argument(help: "Calendar ID to update.")
+    var calendarID: String
+
+    @Option(name: .long, help: "New title.")
+    var title: String?
+
+    @Option(name: .long, help: "New color hex code.")
+    var color: String?
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+        let resolvedID = ConfigManager.resolveAlias(calendarID)
+        let result = manager.updateCalendar(calendarID: resolvedID, title: title, color: color)
+        print(result.toJSON())
+    }
+}
+
+struct DeleteCalendar: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "delete",
+        abstract: "Delete a calendar."
+    )
+
+    @Argument(help: "Calendar ID to delete.")
+    var calendarID: String
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+        // Resolve alias if needed
+        let resolvedID = ConfigManager.resolveAlias(calendarID)
+        let result = manager.deleteCalendar(calendarID: resolvedID)
+        print(result.toJSON())
+    }
+}
+
+// MARK: - Helper Methods
 
 struct Delete: ParsableCommand {
     static let configuration = CommandConfiguration(

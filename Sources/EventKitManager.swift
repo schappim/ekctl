@@ -1,6 +1,7 @@
 import ArgumentParser
 import EventKit
 import Foundation
+import CoreLocation
 
 /// EventKitManager handles all interactions with the EventKit framework.
 ///
@@ -87,6 +88,80 @@ class EventKitManager {
 
     // MARK: - Calendar Operations
 
+    /// Create a new calendar
+    func createCalendar(title: String, color: String?) -> JSONOutput {
+        // Attempt to find a source (usually iCloud or Local)
+        let sources = eventStore.sources
+        // Prefer iCloud, then Local source
+        guard let source = sources.first(where: { $0.sourceType == .calDAV && $0.title == "iCloud" }) 
+              ?? sources.first(where: { $0.sourceType == .local }) 
+              ?? sources.first else {
+             return JSONOutput.error("No suitable calendar source found")
+        }
+        
+        let newCalendar = EKCalendar(for: .event, eventStore: eventStore)
+        newCalendar.title = title
+        newCalendar.source = source
+        
+        if let colorHex = color {
+             if let cgColor = CGColor.fromHex(colorHex) {
+                 newCalendar.cgColor = cgColor
+             }
+        }
+
+        do {
+            try eventStore.saveCalendar(newCalendar, commit: true)
+            return JSONOutput.success([
+                "status": "success",
+                "message": "Calendar created successfully",
+                "id": newCalendar.calendarIdentifier
+            ])
+        } catch {
+            return JSONOutput.error("Failed to create calendar: \(error.localizedDescription)")
+        }
+    }
+    
+    /// Update a calendar
+    func updateCalendar(calendarID: String, title: String?, color: String?) -> JSONOutput {
+        guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
+             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
+        }
+        
+        if let title = title { calendar.title = title }
+        if let colorHex = color {
+             if let cgColor = CGColor.fromHex(colorHex) {
+                 calendar.cgColor = cgColor
+             }
+        }
+        
+        do {
+            try eventStore.saveCalendar(calendar, commit: true)
+             return JSONOutput.success([
+                "status": "success",
+                "message": "Calendar updated successfully"
+            ])
+        } catch {
+            return JSONOutput.error("Failed to update calendar: \(error.localizedDescription)")
+        }
+    }
+
+    /// Delete a calendar
+    func deleteCalendar(calendarID: String) -> JSONOutput {
+        guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
+             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
+        }
+        
+        do {
+            try eventStore.removeCalendar(calendar, commit: true)
+             return JSONOutput.success([
+                "status": "success",
+                "message": "Calendar deleted successfully"
+            ])
+        } catch {
+            return JSONOutput.error("Failed to delete calendar: \(error.localizedDescription)")
+        }
+    }
+
     /// Lists all calendars (event calendars and reminder lists)
     func listCalendars() -> JSONOutput {
         var calendars: [[String: Any]] = []
@@ -147,6 +222,103 @@ class EventKitManager {
         return JSONOutput.success(["event": eventToDict(event)])
     }
 
+    /// Updates an existing calendar event
+    func updateEvent(
+        eventID: String,
+        title: String?,
+        startDate: Date?,
+        endDate: Date?,
+        location: String?,
+        notes: String?,
+        allDay: Bool?,
+        url: String?,
+        availability: String?,
+        travelTime: TimeInterval?,
+        travelStartLocation: String? = nil,
+        transportType: String? = nil,
+        alarms: [Double]?
+    ) -> JSONOutput {
+        guard let event = eventStore.event(withIdentifier: eventID) else {
+            return JSONOutput.error("Event not found with ID: \(eventID)")
+        }
+        
+        if let title = title { event.title = title }
+        if let startDate = startDate { event.startDate = startDate }
+        if let endDate = endDate { event.endDate = endDate }
+        if let location = location { 
+            event.location = location
+            
+            // Should update structured location too
+            let group = DispatchGroup()
+            group.enter()
+            
+            let geocoder = CLGeocoder()
+            geocoder.geocodeAddressString(location) { placemarks, error in
+                if let placemark = placemarks?.first, let geo = placemark.location {
+                    let structured = EKStructuredLocation(title: location)
+                    structured.geoLocation = geo
+                    structured.radius = 0
+                    event.structuredLocation = structured
+                } else {
+                     let structured = EKStructuredLocation(title: location)
+                     event.structuredLocation = structured
+                }
+                group.leave()
+            }
+            
+            let timeout = Date(timeIntervalSinceNow: 2.0)
+            while group.wait(timeout: .now()) == .timedOut {
+                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+                if Date() > timeout { break }
+            }
+        }  
+        if let notes = notes { event.notes = notes }
+        if let allDay = allDay { event.isAllDay = allDay }
+        
+        if let urlString = url, let urlObj = URL(string: urlString) {
+            event.url = urlObj
+        }
+        
+        if let avail = availability?.lowercased() {
+             switch avail {
+             case "busy": event.availability = .busy
+             case "free": event.availability = .free
+             case "tentative": event.availability = .tentative
+             case "unavailable": event.availability = .unavailable
+             default: break 
+             }
+        }
+        
+        if let travelTime = travelTime {
+             event.setValue(travelTime, forKey: "travelTime")
+        }
+    
+        
+        if let tTime = travelTime {
+            event.setValue(tTime, forKey: "travelTime")
+        }
+        
+        if let alarms = alarms {
+            if let existing = event.alarms {
+                for alarm in existing { event.removeAlarm(alarm) }
+            }
+            for offset in alarms {
+                event.addAlarm(EKAlarm(relativeOffset: offset))
+            }
+        }
+        
+        do {
+            try eventStore.save(event, span: .thisEvent)
+             return JSONOutput.success([
+                "status": "success",
+                "message": "Event updated successfully",
+                "event": eventToDict(event)
+            ])
+        } catch {
+             return JSONOutput.error("Failed to update event: \(error.localizedDescription)")
+        }
+    }
+
     /// Creates a new calendar event
     func addEvent(
         calendarID: String,
@@ -155,7 +327,23 @@ class EventKitManager {
         endDate: Date,
         location: String?,
         notes: String?,
-        allDay: Bool
+        allDay: Bool,
+        recurrenceFrequency: String? = nil,
+        recurrenceInterval: Int = 1,
+        recurrenceEndCount: Int? = nil,
+        recurrenceEndDate: Date? = nil,
+        recurrenceDays: String? = nil,
+        recurrenceMonths: [NSNumber]? = nil,
+        recurrenceDaysOfMonth: [NSNumber]? = nil,
+        recurrenceWeeksOfYear: [NSNumber]? = nil,
+        recurrenceDaysOfYear: [NSNumber]? = nil,
+        recurrenceSetPositions: [NSNumber]? = nil,
+        travelTime: TimeInterval? = nil,
+        travelStartLocation: String? = nil,
+        transportType: String? = nil,
+        alarms: [Double]? = nil,
+        url: String? = nil,
+        availability: String? = nil
     ) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
@@ -170,9 +358,115 @@ class EventKitManager {
         event.title = title
         event.startDate = startDate
         event.endDate = endDate
-        event.location = location
+        // Location handling will be done below
         event.notes = notes
         event.isAllDay = allDay
+        
+        if let urlString = url, let urlObj = URL(string: urlString) {
+            event.url = urlObj
+        }
+        
+        if let avail = availability?.lowercased() {
+             switch avail {
+             case "busy": event.availability = .busy
+             case "free": event.availability = .free
+             case "tentative": event.availability = .tentative
+             case "unavailable": event.availability = .unavailable
+             default: break 
+             }
+        }
+        
+        if let alarms = alarms {
+            for offset in alarms {
+                event.addAlarm(EKAlarm(relativeOffset: offset))
+            }
+        }
+
+        // Location & Structured Location
+        if let locationString = location {
+            // First set standard location string
+            event.location = locationString
+            
+            // Use shared resolveLocation helper which is more robust
+            let structuredLocation = resolveLocation(locationString)
+            event.structuredLocation = structuredLocation
+        }
+
+        // Recurrence Support
+        if let freqString = recurrenceFrequency?.lowercased(), !freqString.isEmpty {
+            var frequency: EKRecurrenceFrequency
+            switch freqString {
+            case "daily": frequency = .daily
+            case "weekly": frequency = .weekly
+            case "monthly": frequency = .monthly
+            case "yearly": frequency = .yearly
+            default: return JSONOutput.error("Invalid recurrence frequency: \(freqString)")
+            }
+
+            var daysOfTheWeek: [EKRecurrenceDayOfWeek]?
+            if let daysStr = recurrenceDays {
+                var days: [EKRecurrenceDayOfWeek] = []
+                let dayMap: [String: EKWeekday] = [
+                    "mon": .monday, "monday": .monday,
+                    "tue": .tuesday, "tuesday": .tuesday,
+                    "wed": .wednesday, "wednesday": .wednesday,
+                    "thu": .thursday, "thursday": .thursday,
+                    "fri": .friday, "friday": .friday,
+                    "sat": .saturday, "saturday": .saturday,
+                    "sun": .sunday, "sunday": .sunday
+                ]
+                
+                // Parse strings like "mon", "1mon", "-1fri"
+                for dayPart in daysStr.split(separator: ",") {
+                    var part = dayPart.trimmingCharacters(in: .whitespaces).lowercased()
+                    var weekNumber = 0
+                    
+                    // Extract leading number if present
+                    if let range = part.range(of: "^-?\\d+", options: .regularExpression) {
+                        if let num = Int(part[range]) {
+                            weekNumber = num
+                            part.removeSubrange(range)
+                        }
+                    }
+                    
+                    if let weekday = dayMap[part] {
+                        if weekNumber != 0 {
+                            days.append(EKRecurrenceDayOfWeek(weekday, weekNumber: weekNumber))
+                        } else {
+                            days.append(EKRecurrenceDayOfWeek(weekday))
+                        }
+                    } else {
+                        return JSONOutput.error("Invalid recurrence day: \(dayPart)")
+                    }
+                }
+                daysOfTheWeek = days.isEmpty ? nil : days
+            }
+
+            var recurrenceEnd: EKRecurrenceEnd?
+            if let count = recurrenceEndCount {
+                recurrenceEnd = EKRecurrenceEnd(occurrenceCount: count)
+            } else if let recEndDate = recurrenceEndDate {
+                recurrenceEnd = EKRecurrenceEnd(end: recEndDate)
+            }
+            
+            let rule = EKRecurrenceRule(
+                recurrenceWith: frequency,
+                interval: recurrenceInterval,
+                daysOfTheWeek: daysOfTheWeek,
+                daysOfTheMonth: recurrenceDaysOfMonth,
+                monthsOfTheYear: recurrenceMonths,
+                weeksOfTheYear: recurrenceWeeksOfYear,
+                daysOfTheYear: recurrenceDaysOfYear,
+                setPositions: recurrenceSetPositions,
+                end: recurrenceEnd
+            )
+            event.addRecurrenceRule(rule)
+        }
+
+        // Travel Time (Manual)
+        if let tTime = travelTime {
+            event.setValue(tTime, forKey: "travelTime")
+        }
 
         do {
             try eventStore.save(event, span: .thisEvent)
@@ -330,6 +624,32 @@ class EventKitManager {
 
     // MARK: - Helper Methods
 
+    /// Resolves a string address to an EKStructuredLocation using CLGeocoder
+    private func resolveLocation(_ address: String) -> EKStructuredLocation {
+        let group = DispatchGroup()
+        group.enter()
+        var result = EKStructuredLocation(title: address)
+        
+        let geocoder = CLGeocoder()
+        geocoder.geocodeAddressString(address) { placemarks, error in
+            if let placemark = placemarks?.first, let location = placemark.location {
+                let s = EKStructuredLocation(title: address)
+                s.geoLocation = location
+                s.radius = 0
+                result = s
+            }
+            group.leave()
+        }
+        
+        // Wait for geocoding (max 5 seconds to be safe)
+        let timeout = Date(timeIntervalSinceNow: 5.0)
+        while group.wait(timeout: .now()) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+            if Date() > timeout { break }
+        }
+        return result
+    }
+
     /// Creates a date formatter that outputs ISO 8601 format in the user's local timezone
     private func localDateFormatter() -> DateFormatter {
         let formatter = DateFormatter()
@@ -433,5 +753,20 @@ extension CGColor {
         let b = Int(components[2] * 255)
 
         return String(format: "#%02X%02X%02X", r, g, b)
+    }
+
+    static func fromHex(_ hex: String) -> CGColor? {
+        var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
+
+        var rgb: UInt64 = 0
+
+        guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
+
+        let r = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
+        let g = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
+        let b = CGFloat(rgb & 0x0000FF) / 255.0
+
+        return CGColor(srgbRed: r, green: g, blue: b, alpha: 1.0)
     }
 }
