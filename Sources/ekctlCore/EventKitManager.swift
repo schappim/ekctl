@@ -1,7 +1,8 @@
 import ArgumentParser
+import CoreGraphics
+import CoreLocation
 import EventKit
 import Foundation
-import CoreLocation
 
 /// EventKitManager handles all interactions with the EventKit framework.
 ///
@@ -22,14 +23,17 @@ import CoreLocation
 ///    If denied, all operations will fail with a permission error.
 ///
 /// 5. Users can manage permissions in: System Settings > Privacy & Security > Calendars/Reminders
-class EventKitManager {
+
+public class EventKitManager {
+    public init() {}
+
     private let eventStore = EKEventStore()
     private var calendarAccessGranted = false
     private var reminderAccessGranted = false
 
     /// Requests access to both Calendar and Reminders.
     /// This must be called before any EventKit operations.
-    func requestAccess() throws {
+    public func requestAccess() throws {
         let semaphore = DispatchSemaphore(value: 0)
         var calendarError: Error?
         var reminderError: Error?
@@ -72,16 +76,18 @@ class EventKitManager {
             throw ExitCode.failure
         }
         if let error = reminderError {
-            print(JSONOutput.error("Reminders access error: \(error.localizedDescription)").toJSON())
+            print(
+                JSONOutput.error("Reminders access error: \(error.localizedDescription)").toJSON())
             throw ExitCode.failure
         }
 
         // Check permissions
         if !calendarAccessGranted && !reminderAccessGranted {
-            print(JSONOutput.error(
-                "Permission denied for both Calendar and Reminders. " +
-                "Please grant access in System Settings > Privacy & Security."
-            ).toJSON())
+            print(
+                JSONOutput.error(
+                    "Permission denied for both Calendar and Reminders. "
+                        + "Please grant access in System Settings > Privacy & Security."
+                ).toJSON())
             throw ExitCode.failure
         }
     }
@@ -89,24 +95,26 @@ class EventKitManager {
     // MARK: - Calendar Operations
 
     /// Create a new calendar
-    func createCalendar(title: String, color: String?) -> JSONOutput {
+    public func createCalendar(title: String, color: String?) -> JSONOutput {
         // Attempt to find a source (usually iCloud or Local)
         let sources = eventStore.sources
         // Prefer iCloud, then Local source
-        guard let source = sources.first(where: { $0.sourceType == .calDAV && $0.title == "iCloud" }) 
-              ?? sources.first(where: { $0.sourceType == .local }) 
-              ?? sources.first else {
-             return JSONOutput.error("No suitable calendar source found")
+        guard
+            let source = sources.first(where: { $0.sourceType == .calDAV && $0.title == "iCloud" })
+                ?? sources.first(where: { $0.sourceType == .local })
+                ?? sources.first
+        else {
+            return JSONOutput.error("No suitable calendar source found")
         }
-        
+
         let newCalendar = EKCalendar(for: .event, eventStore: eventStore)
         newCalendar.title = title
         newCalendar.source = source
-        
+
         if let colorHex = color {
-             if let cgColor = CGColor.fromHex(colorHex) {
-                 newCalendar.cgColor = cgColor
-             }
+            if let cgColor = CGColor.fromHex(colorHex) {
+                newCalendar.cgColor = cgColor
+            }
         }
 
         do {
@@ -114,31 +122,31 @@ class EventKitManager {
             return JSONOutput.success([
                 "status": "success",
                 "message": "Calendar created successfully",
-                "id": newCalendar.calendarIdentifier
+                "id": newCalendar.calendarIdentifier,
             ])
         } catch {
             return JSONOutput.error("Failed to create calendar: \(error.localizedDescription)")
         }
     }
-    
+
     /// Update a calendar
-    func updateCalendar(calendarID: String, title: String?, color: String?) -> JSONOutput {
+    public func updateCalendar(calendarID: String, title: String?, color: String?) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
-             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
+            return JSONOutput.error("Calendar not found with ID: \(calendarID)")
         }
-        
+
         if let title = title { calendar.title = title }
         if let colorHex = color {
-             if let cgColor = CGColor.fromHex(colorHex) {
-                 calendar.cgColor = cgColor
-             }
+            if let cgColor = CGColor.fromHex(colorHex) {
+                calendar.cgColor = cgColor
+            }
         }
-        
+
         do {
             try eventStore.saveCalendar(calendar, commit: true)
-             return JSONOutput.success([
+            return JSONOutput.success([
                 "status": "success",
-                "message": "Calendar updated successfully"
+                "message": "Calendar updated successfully",
             ])
         } catch {
             return JSONOutput.error("Failed to update calendar: \(error.localizedDescription)")
@@ -146,16 +154,16 @@ class EventKitManager {
     }
 
     /// Delete a calendar
-    func deleteCalendar(calendarID: String) -> JSONOutput {
+    public func deleteCalendar(calendarID: String) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
-             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
+            return JSONOutput.error("Calendar not found with ID: \(calendarID)")
         }
-        
+
         do {
             try eventStore.removeCalendar(calendar, commit: true)
-             return JSONOutput.success([
+            return JSONOutput.success([
                 "status": "success",
-                "message": "Calendar deleted successfully"
+                "message": "Calendar deleted successfully",
             ])
         } catch {
             return JSONOutput.error("Failed to delete calendar: \(error.localizedDescription)")
@@ -163,7 +171,7 @@ class EventKitManager {
     }
 
     /// Lists all calendars (event calendars and reminder lists)
-    func listCalendars() -> JSONOutput {
+    public func listCalendars() -> JSONOutput {
         var calendars: [[String: Any]] = []
 
         // Event calendars
@@ -174,7 +182,7 @@ class EventKitManager {
                 "type": "event",
                 "source": calendar.source?.title ?? "Unknown",
                 "color": calendar.cgColor?.hexString ?? "#000000",
-                "allowsModifications": calendar.allowsContentModifications
+                "allowsModifications": calendar.allowsContentModifications,
             ])
         }
 
@@ -186,7 +194,7 @@ class EventKitManager {
                 "type": "reminder",
                 "source": calendar.source?.title ?? "Unknown",
                 "color": calendar.cgColor?.hexString ?? "#000000",
-                "allowsModifications": calendar.allowsContentModifications
+                "allowsModifications": calendar.allowsContentModifications,
             ])
         }
 
@@ -196,7 +204,7 @@ class EventKitManager {
     // MARK: - Event Operations
 
     /// Lists events in a calendar within a date range
-    func listEvents(calendarID: String, from startDate: Date, to endDate: Date) -> JSONOutput {
+    public func listEvents(calendarID: String, from startDate: Date, to endDate: Date) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
         }
@@ -214,7 +222,7 @@ class EventKitManager {
     }
 
     /// Shows details of a specific event
-    func showEvent(eventID: String) -> JSONOutput {
+    public func showEvent(eventID: String) -> JSONOutput {
         guard let event = eventStore.event(withIdentifier: eventID) else {
             return JSONOutput.error("Event not found with ID: \(eventID)")
         }
@@ -223,7 +231,7 @@ class EventKitManager {
     }
 
     /// Updates an existing calendar event
-    func updateEvent(
+    public func updateEvent(
         eventID: String,
         title: String?,
         startDate: Date?,
@@ -234,70 +242,45 @@ class EventKitManager {
         url: String?,
         availability: String?,
         travelTime: TimeInterval?,
-        travelStartLocation: String? = nil,
-        transportType: String? = nil,
         alarms: [Double]?
     ) -> JSONOutput {
         guard let event = eventStore.event(withIdentifier: eventID) else {
             return JSONOutput.error("Event not found with ID: \(eventID)")
         }
-        
+
         if let title = title { event.title = title }
         if let startDate = startDate { event.startDate = startDate }
         if let endDate = endDate { event.endDate = endDate }
-        if let location = location { 
+        if let location = location {
             event.location = location
-            
-            // Should update structured location too
-            let group = DispatchGroup()
-            group.enter()
-            
-            let geocoder = CLGeocoder()
-            geocoder.geocodeAddressString(location) { placemarks, error in
-                if let placemark = placemarks?.first, let geo = placemark.location {
-                    let structured = EKStructuredLocation(title: location)
-                    structured.geoLocation = geo
-                    structured.radius = 0
-                    event.structuredLocation = structured
-                } else {
-                     let structured = EKStructuredLocation(title: location)
-                     event.structuredLocation = structured
-                }
-                group.leave()
-            }
-            
-            let timeout = Date(timeIntervalSinceNow: 2.0)
-            while group.wait(timeout: .now()) == .timedOut {
-                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
-                if Date() > timeout { break }
-            }
-        }  
+            // Use shared resolver (5s timeout) for consistent behavior with addEvent
+            let structured = resolveLocation(location)
+            event.structuredLocation = structured
+        }
         if let notes = notes { event.notes = notes }
         if let allDay = allDay { event.isAllDay = allDay }
-        
+
         if let urlString = url, let urlObj = URL(string: urlString) {
             event.url = urlObj
         }
-        
+
         if let avail = availability?.lowercased() {
-             switch avail {
-             case "busy": event.availability = .busy
-             case "free": event.availability = .free
-             case "tentative": event.availability = .tentative
-             case "unavailable": event.availability = .unavailable
-             default: break 
-             }
+            switch avail {
+            case "busy": event.availability = .busy
+            case "free": event.availability = .free
+            case "tentative": event.availability = .tentative
+            case "unavailable": event.availability = .unavailable
+            default: break
+            }
         }
-        
+
         if let travelTime = travelTime {
-             event.setValue(travelTime, forKey: "travelTime")
+            // IMPORTANT: `travelTime` is set using KVC on a private/undocumented property name ("travelTime").
+            // This is intentional as EventKit does not expose a public API for travel time.
+            // This may break in future macOS updates.
+            event.setValue(travelTime, forKey: "travelTime")
         }
-    
-        
-        if let tTime = travelTime {
-            event.setValue(tTime, forKey: "travelTime")
-        }
-        
+
         if let alarms = alarms {
             if let existing = event.alarms {
                 for alarm in existing { event.removeAlarm(alarm) }
@@ -306,21 +289,21 @@ class EventKitManager {
                 event.addAlarm(EKAlarm(relativeOffset: offset))
             }
         }
-        
+
         do {
             try eventStore.save(event, span: .thisEvent)
-             return JSONOutput.success([
+            return JSONOutput.success([
                 "status": "success",
                 "message": "Event updated successfully",
-                "event": eventToDict(event)
+                "event": eventToDict(event),
             ])
         } catch {
-             return JSONOutput.error("Failed to update event: \(error.localizedDescription)")
+            return JSONOutput.error("Failed to update event: \(error.localizedDescription)")
         }
     }
 
     /// Creates a new calendar event
-    func addEvent(
+    public func addEvent(
         calendarID: String,
         title: String,
         startDate: Date,
@@ -339,8 +322,6 @@ class EventKitManager {
         recurrenceDaysOfYear: [NSNumber]? = nil,
         recurrenceSetPositions: [NSNumber]? = nil,
         travelTime: TimeInterval? = nil,
-        travelStartLocation: String? = nil,
-        transportType: String? = nil,
         alarms: [Double]? = nil,
         url: String? = nil,
         availability: String? = nil
@@ -361,21 +342,21 @@ class EventKitManager {
         // Location handling will be done below
         event.notes = notes
         event.isAllDay = allDay
-        
+
         if let urlString = url, let urlObj = URL(string: urlString) {
             event.url = urlObj
         }
-        
+
         if let avail = availability?.lowercased() {
-             switch avail {
-             case "busy": event.availability = .busy
-             case "free": event.availability = .free
-             case "tentative": event.availability = .tentative
-             case "unavailable": event.availability = .unavailable
-             default: break 
-             }
+            switch avail {
+            case "busy": event.availability = .busy
+            case "free": event.availability = .free
+            case "tentative": event.availability = .tentative
+            case "unavailable": event.availability = .unavailable
+            default: break
+            }
         }
-        
+
         if let alarms = alarms {
             for offset in alarms {
                 event.addAlarm(EKAlarm(relativeOffset: offset))
@@ -386,7 +367,7 @@ class EventKitManager {
         if let locationString = location {
             // First set standard location string
             event.location = locationString
-            
+
             // Use shared resolveLocation helper which is more robust
             let structuredLocation = resolveLocation(locationString)
             event.structuredLocation = structuredLocation
@@ -413,14 +394,14 @@ class EventKitManager {
                     "thu": .thursday, "thursday": .thursday,
                     "fri": .friday, "friday": .friday,
                     "sat": .saturday, "saturday": .saturday,
-                    "sun": .sunday, "sunday": .sunday
+                    "sun": .sunday, "sunday": .sunday,
                 ]
-                
+
                 // Parse strings like "mon", "1mon", "-1fri"
                 for dayPart in daysStr.split(separator: ",") {
                     var part = dayPart.trimmingCharacters(in: .whitespaces).lowercased()
                     var weekNumber = 0
-                    
+
                     // Extract leading number if present
                     if let range = part.range(of: "^-?\\d+", options: .regularExpression) {
                         if let num = Int(part[range]) {
@@ -428,7 +409,7 @@ class EventKitManager {
                             part.removeSubrange(range)
                         }
                     }
-                    
+
                     if let weekday = dayMap[part] {
                         if weekNumber != 0 {
                             days.append(EKRecurrenceDayOfWeek(weekday, weekNumber: weekNumber))
@@ -448,7 +429,7 @@ class EventKitManager {
             } else if let recEndDate = recurrenceEndDate {
                 recurrenceEnd = EKRecurrenceEnd(end: recEndDate)
             }
-            
+
             let rule = EKRecurrenceRule(
                 recurrenceWith: frequency,
                 interval: recurrenceInterval,
@@ -473,7 +454,7 @@ class EventKitManager {
             return JSONOutput.success([
                 "status": "success",
                 "message": "Event created successfully",
-                "event": eventToDict(event)
+                "event": eventToDict(event),
             ])
         } catch {
             return JSONOutput.error("Failed to create event: \(error.localizedDescription)")
@@ -481,7 +462,7 @@ class EventKitManager {
     }
 
     /// Deletes a calendar event
-    func deleteEvent(eventID: String) -> JSONOutput {
+    public func deleteEvent(eventID: String) -> JSONOutput {
         guard let event = eventStore.event(withIdentifier: eventID) else {
             return JSONOutput.error("Event not found with ID: \(eventID)")
         }
@@ -493,7 +474,7 @@ class EventKitManager {
             return JSONOutput.success([
                 "status": "success",
                 "message": "Event '\(title)' deleted successfully",
-                "deletedEventID": eventID
+                "deletedEventID": eventID,
             ])
         } catch {
             return JSONOutput.error("Failed to delete event: \(error.localizedDescription)")
@@ -503,7 +484,7 @@ class EventKitManager {
     // MARK: - Reminder Operations
 
     /// Lists reminders in a reminder list
-    func listReminders(listID: String, completed: Bool?) -> JSONOutput {
+    public func listReminders(listID: String, completed: Bool?) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: listID) else {
             return JSONOutput.error("Reminder list not found with ID: \(listID)")
         }
@@ -532,8 +513,9 @@ class EventKitManager {
     }
 
     /// Shows details of a specific reminder
-    func showReminder(reminderID: String) -> JSONOutput {
-        guard let reminder = eventStore.calendarItem(withIdentifier: reminderID) as? EKReminder else {
+    public func showReminder(reminderID: String) -> JSONOutput {
+        guard let reminder = eventStore.calendarItem(withIdentifier: reminderID) as? EKReminder
+        else {
             return JSONOutput.error("Reminder not found with ID: \(reminderID)")
         }
 
@@ -541,7 +523,7 @@ class EventKitManager {
     }
 
     /// Creates a new reminder
-    func addReminder(
+    public func addReminder(
         listID: String,
         title: String,
         dueDate: Date?,
@@ -553,7 +535,8 @@ class EventKitManager {
         }
 
         guard calendar.allowsContentModifications else {
-            return JSONOutput.error("Reminder list '\(calendar.title)' does not allow modifications.")
+            return JSONOutput.error(
+                "Reminder list '\(calendar.title)' does not allow modifications.")
         }
 
         let reminder = EKReminder(eventStore: eventStore)
@@ -574,16 +557,57 @@ class EventKitManager {
             return JSONOutput.success([
                 "status": "success",
                 "message": "Reminder created successfully",
-                "reminder": reminderToDict(reminder)
+                "reminder": reminderToDict(reminder),
             ])
         } catch {
             return JSONOutput.error("Failed to create reminder: \(error.localizedDescription)")
         }
     }
 
+    /// Updates an existing reminder
+    public func updateReminder(
+        reminderID: String,
+        title: String?,
+        dueDate: Date?,
+        priority: Int?,
+        notes: String?,
+        completed: Bool?
+    ) -> JSONOutput {
+        guard let reminder = eventStore.calendarItem(withIdentifier: reminderID) as? EKReminder
+        else {
+            return JSONOutput.error("Reminder not found with ID: \(reminderID)")
+        }
+
+        if let title = title { reminder.title = title }
+        if let notes = notes { reminder.notes = notes }
+        if let priority = priority { reminder.priority = priority }
+        if let completed = completed {
+            reminder.isCompleted = completed
+            reminder.completionDate = completed ? Date() : nil
+        }
+        if let dueDate = dueDate {
+            reminder.dueDateComponents = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute, .second],
+                from: dueDate
+            )
+        }
+
+        do {
+            try eventStore.save(reminder, commit: true)
+            return JSONOutput.success([
+                "status": "success",
+                "message": "Reminder updated successfully",
+                "reminder": reminderToDict(reminder),
+            ])
+        } catch {
+            return JSONOutput.error("Failed to update reminder: \(error.localizedDescription)")
+        }
+    }
+
     /// Marks a reminder as completed
-    func completeReminder(reminderID: String) -> JSONOutput {
-        guard let reminder = eventStore.calendarItem(withIdentifier: reminderID) as? EKReminder else {
+    public func completeReminder(reminderID: String) -> JSONOutput {
+        guard let reminder = eventStore.calendarItem(withIdentifier: reminderID) as? EKReminder
+        else {
             return JSONOutput.error("Reminder not found with ID: \(reminderID)")
         }
 
@@ -595,7 +619,7 @@ class EventKitManager {
             return JSONOutput.success([
                 "status": "success",
                 "message": "Reminder '\(reminder.title ?? "Untitled")' marked as completed",
-                "reminder": reminderToDict(reminder)
+                "reminder": reminderToDict(reminder),
             ])
         } catch {
             return JSONOutput.error("Failed to complete reminder: \(error.localizedDescription)")
@@ -603,8 +627,9 @@ class EventKitManager {
     }
 
     /// Deletes a reminder
-    func deleteReminder(reminderID: String) -> JSONOutput {
-        guard let reminder = eventStore.calendarItem(withIdentifier: reminderID) as? EKReminder else {
+    public func deleteReminder(reminderID: String) -> JSONOutput {
+        guard let reminder = eventStore.calendarItem(withIdentifier: reminderID) as? EKReminder
+        else {
             return JSONOutput.error("Reminder not found with ID: \(reminderID)")
         }
 
@@ -615,7 +640,7 @@ class EventKitManager {
             return JSONOutput.success([
                 "status": "success",
                 "message": "Reminder '\(title)' deleted successfully",
-                "deletedReminderID": reminderID
+                "deletedReminderID": reminderID,
             ])
         } catch {
             return JSONOutput.error("Failed to delete reminder: \(error.localizedDescription)")
@@ -629,7 +654,7 @@ class EventKitManager {
         let group = DispatchGroup()
         group.enter()
         var result = EKStructuredLocation(title: address)
-        
+
         let geocoder = CLGeocoder()
         geocoder.geocodeAddressString(address) { placemarks, error in
             if let placemark = placemarks?.first, let location = placemark.location {
@@ -640,7 +665,7 @@ class EventKitManager {
             }
             group.leave()
         }
-        
+
         // Wait for geocoding (max 5 seconds to be safe)
         let timeout = Date(timeIntervalSinceNow: 5.0)
         while group.wait(timeout: .now()) == .timedOut {
@@ -667,9 +692,9 @@ class EventKitManager {
             "title": event.title ?? "",
             "calendar": [
                 "id": event.calendar?.calendarIdentifier ?? "",
-                "title": event.calendar?.title ?? ""
+                "title": event.calendar?.title ?? "",
             ],
-            "allDay": event.isAllDay
+            "allDay": event.isAllDay,
         ]
 
         if let startDate = event.startDate {
@@ -707,14 +732,15 @@ class EventKitManager {
             "title": reminder.title ?? "",
             "list": [
                 "id": reminder.calendar?.calendarIdentifier ?? "",
-                "title": reminder.calendar?.title ?? ""
+                "title": reminder.calendar?.title ?? "",
             ],
             "completed": reminder.isCompleted,
-            "priority": reminder.priority
+            "priority": reminder.priority,
         ]
 
         if let dueDateComponents = reminder.dueDateComponents,
-           let dueDate = Calendar.current.date(from: dueDateComponents) {
+            let dueDate = Calendar.current.date(from: dueDateComponents)
+        {
             dict["dueDate"] = formatter.string(from: dueDate)
         } else {
             dict["dueDate"] = NSNull()
@@ -740,10 +766,8 @@ class EventKitManager {
 
 // MARK: - CGColor Extension for Hex String
 
-import CoreGraphics
-
 extension CGColor {
-    var hexString: String {
+    public var hexString: String {
         guard let components = components, components.count >= 3 else {
             return "#000000"
         }
@@ -755,7 +779,7 @@ extension CGColor {
         return String(format: "#%02X%02X%02X", r, g, b)
     }
 
-    static func fromHex(_ hex: String) -> CGColor? {
+    public static func fromHex(_ hex: String) -> CGColor? {
         var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
 

@@ -1,6 +1,7 @@
 import ArgumentParser
 import EventKit
 import Foundation
+import ekctlCore
 
 // MARK: - Main Command
 
@@ -8,9 +9,13 @@ import Foundation
 struct Ekctl: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ekctl",
-        abstract: "A command-line tool for managing macOS Calendar events and Reminders using EventKit.",
+        abstract:
+            "A command-line tool for managing macOS Calendar events and Reminders using EventKit.",
         version: "1.3.0",
-        subcommands: [List.self, Show.self, Add.self, Update.self, Delete.self, Complete.self, Alias.self, CalendarCmd.self],
+        subcommands: [
+            List.self, Show.self, Add.self, Update.self, Delete.self, Complete.self, Alias.self,
+            CalendarCmd.self,
+        ],
         defaultSubcommand: List.self
     )
 }
@@ -58,11 +63,17 @@ struct ListEvents: ParsableCommand {
         try manager.requestAccess()
 
         guard let startDate = ISO8601DateFormatter().date(from: from) else {
-            print(JSONOutput.error("Invalid --from date format. Use ISO8601 (e.g., 2026-02-01T00:00:00Z).").toJSON())
+            print(
+                JSONOutput.error(
+                    "Invalid --from date format. Use ISO8601 (e.g., 2026-02-01T00:00:00Z)."
+                ).toJSON())
             throw ExitCode.failure
         }
         guard let endDate = ISO8601DateFormatter().date(from: to) else {
-            print(JSONOutput.error("Invalid --to date format. Use ISO8601 (e.g., 2026-02-07T23:59:59Z).").toJSON())
+            print(
+                JSONOutput.error(
+                    "Invalid --to date format. Use ISO8601 (e.g., 2026-02-07T23:59:59Z)."
+                ).toJSON())
             throw ExitCode.failure
         }
 
@@ -186,7 +197,9 @@ struct AddEvent: ParsableCommand {
     @Option(name: .long, help: "Recurrence end date in ISO8601 format.")
     var recurrenceEndDate: String?
 
-    @Option(name: .long, help: "Days of week (e.g., 'mon,tue', '1mon' for 1st Monday, '-1fri' for last Friday).")
+    @Option(
+        name: .long,
+        help: "Days of week (e.g., 'mon,tue', '1mon' for 1st Monday, '-1fri' for last Friday).")
     var recurrenceDays: String?
 
     @Option(name: .long, help: "Months of the year (comma-separated: 1-12 or jan,feb...).")
@@ -209,7 +222,11 @@ struct AddEvent: ParsableCommand {
 
     // MARK: - New Features (Alarms, Availability, URL, etc.)
 
-    @Option(name: .long, help: "Alarms/Alerts relative to start time in minutes (e.g., '-30,-60').")
+    @Option(
+        name: .long,
+        help:
+            "Alarms in minutes. Positive numbers mean minutes before (e.g., 10). Prefix '+' for minutes after (e.g., +10). Negative numbers are accepted."
+    )
     var alarms: String?
 
     @Option(name: .long, help: "URL for the event.")
@@ -234,17 +251,18 @@ struct AddEvent: ParsableCommand {
         var rEndDate: Date?
         if let recEndDateString = recurrenceEndDate, !recEndDateString.isEmpty {
             guard let date = ISO8601DateFormatter().date(from: recEndDateString) else {
-                print(JSONOutput.error("Invalid --recurrence-end-date format. Use ISO8601.").toJSON())
+                print(
+                    JSONOutput.error("Invalid --recurrence-end-date format. Use ISO8601.").toJSON())
                 throw ExitCode.failure
             }
             rEndDate = date
         }
-        
+
         // Parse recurrence interval (default to 1)
         let recurrenceIntervalInt = (recurrenceInterval.flatMap(Int.init)) ?? 1
-        
+
         let recurrenceEndCountInt = recurrenceEndCount.flatMap(Int.init)
-        
+
         // Convert travel time to seconds if provided and valid
         var travelTimeSeconds: TimeInterval?
         if let ttString = travelTime, let ttInt = Int(ttString) {
@@ -254,11 +272,11 @@ struct AddEvent: ParsableCommand {
         // Helper to parse comma-separated integers
         func parseInts(_ string: String?) -> [NSNumber]? {
             guard let string = string else { return nil }
-            return string.split(separator: ",").compactMap { 
-                Int($0.trimmingCharacters(in: .whitespaces)).map { NSNumber(value: $0) } 
+            return string.split(separator: ",").compactMap {
+                Int($0.trimmingCharacters(in: .whitespaces)).map { NSNumber(value: $0) }
             }
         }
-        
+
         // Helper to parse months (names or numbers)
         func parseMonths(_ string: String?) -> [NSNumber]? {
             guard let string = string else { return nil }
@@ -266,9 +284,9 @@ struct AddEvent: ParsableCommand {
                 "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
                 "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6,
                 "jul": 7, "july": 7, "aug": 8, "august": 8, "sep": 9, "september": 9,
-                "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12
+                "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
             ]
-            
+
             return string.split(separator: ",").compactMap { component in
                 let trimmed = component.trimmingCharacters(in: .whitespaces).lowercased()
                 if let val = Int(trimmed) { return NSNumber(value: val) }
@@ -276,10 +294,25 @@ struct AddEvent: ParsableCommand {
                 return nil
             }
         }
-        
-        let alarmsList = alarms?.split(separator: ",").compactMap { 
-            Double($0.trimmingCharacters(in: .whitespaces)).map { $0 * -60 } 
+
+        func parseAlarms(_ string: String?) -> [Double]? {
+            guard let string = string else { return nil }
+            return string.split(separator: ",").compactMap { component in
+                let s = component.trimmingCharacters(in: .whitespaces)
+                if s.hasPrefix("+") {
+                    if let val = Double(s.dropFirst()) { return val * 60 }
+                    return nil
+                }
+                guard let val = Double(s) else { return nil }
+                if val < 0 {
+                    return val * 60
+                } else {
+                    return -val * 60
+                }
+            }
         }
+
+        let alarmsList = parseAlarms(alarms)
 
         let calendarID = ConfigManager.resolveAlias(calendar)
         let result = manager.addEvent(
@@ -343,8 +376,19 @@ struct AddReminder: ParsableCommand {
             dueDate = parsed
         }
 
-        // Parse priority
-        let priorityInt = (priority.flatMap(Int.init)) ?? 0
+        // Parse priority: require an integer when provided, else error
+        var priorityInt: Int = 0
+        if let priority = priority {
+            if let p = Int(priority) {
+                priorityInt = p
+            } else {
+                print(
+                    JSONOutput.error(
+                        "Invalid --priority value. Must be an integer (e.g., 0,1,5,9). Please use numeric priorities."
+                    ).toJSON())
+                throw ExitCode.failure
+            }
+        }
 
         let listID = ConfigManager.resolveAlias(list)
         let result = manager.addReminder(
@@ -362,8 +406,8 @@ struct AddReminder: ParsableCommand {
 
 struct Update: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Update an existing event.",
-        subcommands: [UpdateEvent.self]
+        abstract: "Update an existing event or reminder.",
+        subcommands: [UpdateEvent.self, UpdateReminder.self]
     )
 }
 
@@ -412,22 +456,39 @@ struct UpdateEvent: ParsableCommand {
 
         var startDate: Date?
         if let start = start {
-             guard let da = ISO8601DateFormatter().date(from: start) else {
-                 throw ExitCode.failure
-             }
-             startDate = da
+            guard let da = ISO8601DateFormatter().date(from: start) else {
+                print(JSONOutput.error("Invalid --start date format. Use ISO8601.").toJSON())
+                throw ExitCode.failure
+            }
+            startDate = da
         }
         var endDate: Date?
         if let end = end {
-             guard let da = ISO8601DateFormatter().date(from: end) else {
-                 throw ExitCode.failure
-             }
-             endDate = da
+            guard let da = ISO8601DateFormatter().date(from: end) else {
+                print(JSONOutput.error("Invalid --end date format. Use ISO8601.").toJSON())
+                throw ExitCode.failure
+            }
+            endDate = da
         }
-        
-        let alarmsList = alarms?.split(separator: ",").compactMap { 
-            Double($0.trimmingCharacters(in: .whitespaces)).map { $0 * -60 } 
+
+        func parseAlarms(_ string: String?) -> [Double]? {
+            guard let string = string else { return nil }
+            return string.split(separator: ",").compactMap { component in
+                let s = component.trimmingCharacters(in: .whitespaces)
+                if s.hasPrefix("+") {
+                    if let val = Double(s.dropFirst()) { return val * 60 }
+                    return nil
+                }
+                guard let val = Double(s) else { return nil }
+                if val < 0 {
+                    return val * 60
+                } else {
+                    return -val * 60
+                }
+            }
         }
+
+        let alarmsList = parseAlarms(alarms)
 
         var travelTimeSeconds: TimeInterval?
         if let ttString = travelTime, let ttInt = Int(ttString) {
@@ -451,7 +512,68 @@ struct UpdateEvent: ParsableCommand {
     }
 }
 
-// MARK: - C
+struct UpdateReminder: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "reminder",
+        abstract: "Update an existing reminder."
+    )
+
+    @Argument(help: "The reminder ID to update.")
+    var reminderID: String
+
+    @Option(name: .long, help: "New title.")
+    var title: String?
+
+    @Option(name: .long, help: "New due date (ISO8601).")
+    var due: String?
+
+    @Option(name: .long, help: "New priority (0=none, 1=high, 5=medium, 9=low).")
+    var priority: String?
+
+    @Option(name: .long, help: "New notes.")
+    var notes: String?
+
+    @Option(name: .long, help: "Mark as completed (true/false).")
+    var completed: Bool?
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+
+        var dueDate: Date?
+        if let due = due {
+            guard let parsed = ISO8601DateFormatter().date(from: due) else {
+                print(JSONOutput.error("Invalid --due date format. Use ISO8601.").toJSON())
+                throw ExitCode.failure
+            }
+            dueDate = parsed
+        }
+
+        var priorityInt: Int?
+        if let priority = priority {
+            guard let p = Int(priority) else {
+                print(
+                    JSONOutput.error(
+                        "Invalid --priority value. Must be an integer (0, 1, 5, or 9)."
+                    ).toJSON())
+                throw ExitCode.failure
+            }
+            priorityInt = p
+        }
+
+        let result = manager.updateReminder(
+            reminderID: reminderID,
+            title: title,
+            dueDate: dueDate,
+            priority: priorityInt,
+            notes: notes,
+            completed: completed
+        )
+        print(result.toJSON())
+    }
+}
+
+// MARK: - Calendar Managment Commands
 
 struct CalendarCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -617,14 +739,15 @@ struct AliasSet: ParsableCommand {
     func run() throws {
         do {
             try ConfigManager.setAlias(name: name, id: id)
-            print(JSONOutput.success([
-                "status": "success",
-                "message": "Alias '\(name)' set successfully",
-                "alias": [
-                    "name": name,
-                    "id": id
-                ]
-            ]).toJSON())
+            print(
+                JSONOutput.success([
+                    "status": "success",
+                    "message": "Alias '\(name)' set successfully",
+                    "alias": [
+                        "name": name,
+                        "id": id,
+                    ],
+                ]).toJSON())
         } catch {
             print(JSONOutput.error("Failed to save alias: \(error.localizedDescription)").toJSON())
             throw ExitCode.failure
@@ -645,16 +768,18 @@ struct AliasRemove: ParsableCommand {
         do {
             let removed = try ConfigManager.removeAlias(name: name)
             if removed {
-                print(JSONOutput.success([
-                    "status": "success",
-                    "message": "Alias '\(name)' removed successfully"
-                ]).toJSON())
+                print(
+                    JSONOutput.success([
+                        "status": "success",
+                        "message": "Alias '\(name)' removed successfully",
+                    ]).toJSON())
             } else {
                 print(JSONOutput.error("Alias '\(name)' not found").toJSON())
                 throw ExitCode.failure
             }
         } catch let error where !(error is ExitCode) {
-            print(JSONOutput.error("Failed to remove alias: \(error.localizedDescription)").toJSON())
+            print(
+                JSONOutput.error("Failed to remove alias: \(error.localizedDescription)").toJSON())
             throw ExitCode.failure
         }
     }
@@ -674,10 +799,11 @@ struct AliasList: ParsableCommand {
             aliasList.append(["name": name, "id": id])
         }
 
-        print(JSONOutput.success([
-            "aliases": aliasList,
-            "count": aliasList.count,
-            "configPath": ConfigManager.configPath()
-        ]).toJSON())
+        print(
+            JSONOutput.success([
+                "aliases": aliasList,
+                "count": aliasList.count,
+                "configPath": ConfigManager.configPath(),
+            ]).toJSON())
     }
 }

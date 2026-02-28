@@ -2,7 +2,7 @@ import Foundation
 
 /// JSONOutput provides consistent JSON formatting for all CLI output.
 /// All commands output valid JSON for easy scripting and parsing.
-struct JSONOutput {
+public struct JSONOutput {
     private let data: [String: Any]
 
     private init(_ data: [String: Any]) {
@@ -10,7 +10,7 @@ struct JSONOutput {
     }
 
     /// Creates a success response with the given data
-    static func success(_ data: [String: Any]) -> JSONOutput {
+    public static func success(_ data: [String: Any]) -> JSONOutput {
         var output = data
         if output["status"] == nil {
             output["status"] = "success"
@@ -19,7 +19,7 @@ struct JSONOutput {
     }
 
     /// Creates an error response with the given message
-    static func error(_ message: String) -> JSONOutput {
+    public static func error(_ message: String) -> JSONOutput {
         return JSONOutput([
             "status": "error",
             "error": message
@@ -27,7 +27,7 @@ struct JSONOutput {
     }
 
     /// Converts the output to a JSON string
-    func toJSON() -> String {
+    public func toJSON() -> String {
         do {
             let jsonData = try JSONSerialization.data(
                 withJSONObject: data,
@@ -38,12 +38,22 @@ struct JSONOutput {
             return "{\"status\": \"error\", \"error\": \"JSON serialization failed: \(error.localizedDescription)\"}"
         }
     }
+
+    /// Converts the JSON output back to a dictionary.
+    /// Useful for scripting and testing.
+    public func toDictionary() -> [String: Any] {
+        guard
+            let data = toJSON().data(using: .utf8),
+            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return dict
+    }
 }
 
 // MARK: - ExitCode Extension
 
 import ArgumentParser
 
-extension ExitCode {
+public extension ExitCode {
     static let permissionDenied = ExitCode(rawValue: 2)
 }
