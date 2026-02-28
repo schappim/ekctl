@@ -2,8 +2,8 @@ import Foundation
 
 /// ConfigManager handles reading and writing the ekctl configuration file.
 /// Configuration is stored at ~/.ekctl/config.json
-struct ConfigManager {
-    private static let configDirectory = FileManager.default.homeDirectoryForCurrentUser
+public struct ConfigManager {
+    private static let configDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".ekctl")
     private static let configFile = configDirectory.appendingPathComponent("config.json")
 
@@ -19,7 +19,7 @@ struct ConfigManager {
     }
 
     /// Loads the configuration from disk, or returns a default config if none exists
-    static func load() -> Config {
+    private static func load() -> Config {
         guard FileManager.default.fileExists(atPath: configFile.path) else {
             return Config()
         }
@@ -35,7 +35,7 @@ struct ConfigManager {
     }
 
     /// Saves the configuration to disk
-    static func save(_ config: Config) throws {
+    private static func save(_ config: Config) throws {
         // Create directory if it doesn't exist
         if !FileManager.default.fileExists(atPath: configDirectory.path) {
             try FileManager.default.createDirectory(
@@ -54,14 +54,14 @@ struct ConfigManager {
     // MARK: - Alias Operations
 
     /// Sets an alias for a calendar/list ID
-    static func setAlias(name: String, id: String) throws {
+    public static func setAlias(name: String, id: String) throws {
         var config = load()
         config.aliases[name] = id
         try save(config)
     }
 
     /// Removes an alias
-    static func removeAlias(name: String) throws -> Bool {
+    public static func removeAlias(name: String) throws -> Bool {
         var config = load()
         guard config.aliases.removeValue(forKey: name) != nil else {
             return false
@@ -71,18 +71,18 @@ struct ConfigManager {
     }
 
     /// Gets all aliases
-    static func getAliases() -> [String: String] {
+    public static func getAliases() -> [String: String] {
         return load().aliases
     }
 
     /// Resolves an alias to an ID, or returns the input if it's not an alias
-    static func resolveAlias(_ nameOrID: String) -> String {
+    public static func resolveAlias(_ nameOrID: String) -> String {
         let config = load()
         return config.aliases[nameOrID] ?? nameOrID
     }
 
     /// Gets the config file path (for display purposes)
-    static func configPath() -> String {
+    public static func configPath() -> String {
         return configFile.path
     }
 }

@@ -10,12 +10,24 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0")
     ],
     targets: [
-        .executableTarget(
-            name: "ekctl",
+        .target(
+            name: "ekctlCore",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ],
-            path: "Sources"
+            path: "Sources/ekctlCore"
+        ),
+        .executableTarget(
+            name: "ekctl",
+            dependencies: [
+                "ekctlCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ],
+            path: "Sources/ekctl"
+        ),
+        .testTarget(
+            name: "ekctlTests",
+            dependencies: ["ekctlCore"]
         )
     ]
 )
