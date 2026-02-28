@@ -72,7 +72,7 @@ ekctl list calendars
 }
 ```
 
-### Create
+### Create Calendar
 
 **Command:**
 
@@ -80,7 +80,7 @@ ekctl list calendars
 ekctl calendar create --title "Project X" --color "#FF5500"
 ```
 
-### Update Reminder
+### Update Calendar
 
 **Command:**
 
@@ -146,7 +146,7 @@ Aliases are stored in `~/.ekctl/config.json`.
 
 ## Events
 
-### List
+### List Events
 
 **Command:**
 
@@ -256,6 +256,53 @@ ekctl add event \
 }
 ```
 
+### Update Event
+
+All flags are optional — only the fields you pass will be changed:
+
+```bash
+ekctl update event EVENT_ID --title "New title"
+```
+
+With multiple fields:
+
+```bash
+ekctl update event EVENT_ID \
+  --title "Updated title" \
+  --start "2026-02-15T14:00:00Z" \
+  --end "2026-02-15T15:30:00Z" \
+  --location "Building 2, Room 301" \
+  --notes "Updated notes" \
+  --alarms "10,30" \
+  --travel-time 20 \
+  --availability busy \
+  --url "https://example.com/meeting"
+```
+
+**Output:**
+
+```json
+{
+  "status": "success",
+  "message": "Event updated successfully",
+  "event": {
+    "id": "ABC123:DEF456",
+    "title": "Updated title",
+    "calendar": {
+      "id": "CA513B39-1659-4359-8FE9-0C2A3DCEF153",
+      "title": "Work"
+    },
+    "startDate": "2026-02-15T14:00:00+08:00",
+    "endDate": "2026-02-15T15:30:00+08:00",
+    "location": "Building 2, Room 301",
+    "notes": "Updated notes",
+    "allDay": false,
+    "hasAlarms": true,
+    "hasRecurrenceRules": false
+  }
+}
+```
+
 ### Delete Event
 
 **Command:**
@@ -319,7 +366,7 @@ ekctl list reminders --list personal --completed true
 }
 ```
 
-### Show
+### Show Reminder
 
 **Command:**
 
@@ -373,7 +420,7 @@ ekctl add reminder \
 }
 ```
 
-### Update
+### Update Reminder
 
 **Command:**
 
@@ -415,7 +462,7 @@ ekctl update reminder REMINDER_ID --completed true
 }
 ```
 
-### Complete
+### Complete Reminder
 
 **Command:**
 
@@ -438,7 +485,7 @@ ekctl complete reminder REMINDER_ID
 }
 ```
 
-### Delete
+### Delete Reminder
 
 **Command:**
 
