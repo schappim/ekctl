@@ -331,10 +331,18 @@ class EventKitManager {
     // MARK: - Helper Methods
 
     /// Creates a date formatter that outputs ISO 8601 format in the user's local timezone
-    private func localDateFormatter() -> DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"  // ISO 8601 with timezone offset
-        formatter.timeZone = TimeZone.current
+    private func localDateFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = .current
+        
+        formatter.formatOptions = [
+                .withFullDate,
+                .withTime,
+                .withColonSeparatorInTime,
+                .withTimeZone                 // Z or ±HHMM
+                // NOTE: intentionally NOT including .withColonSeparatorInTimeZone or .withInternetDateTime
+            ]
+
         return formatter
     }
 
