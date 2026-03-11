@@ -375,6 +375,24 @@ class EventKitManager {
         dict["hasAlarms"] = event.hasAlarms
         dict["hasRecurrenceRules"] = event.hasRecurrenceRules
 
+        if let attendees = event.attendees, !attendees.isEmpty {
+            dict["attendees"] = attendees.map { participant -> [String: Any] in
+                var entry: [String: Any] = [
+                    "name": participant.name ?? "",
+                    "status": participantStatusString(participant.participantStatus),
+                    "role": participantRoleString(participant.participantRole),
+                ]
+                // EKParticipant email is encoded in the URL as mailto:
+                let url = participant.url
+                if url.scheme == "mailto" {
+                    entry["email"] = url.absoluteString.replacingOccurrences(of: "mailto:", with: "")
+                }
+                return entry
+            }
+        } else {
+            dict["attendees"] = [] as [[String: Any]]
+        }
+
         return dict
     }
 
@@ -415,6 +433,31 @@ class EventKitManager {
         }
 
         return dict
+    }
+}
+
+// MARK: - EKParticipant Helpers
+
+private func participantStatusString(_ status: EKParticipantStatus) -> String {
+    switch status {
+    case .accepted: return "accepted"
+    case .declined: return "declined"
+    case .tentative: return "tentative"
+    case .pending: return "pending"
+    case .delegated: return "delegated"
+    case .completed: return "completed"
+    case .inProcess: return "inProcess"
+    default: return "unknown"
+    }
+}
+
+private func participantRoleString(_ role: EKParticipantRole) -> String {
+    switch role {
+    case .required: return "required"
+    case .optional: return "optional"
+    case .chair: return "chair"
+    case .nonParticipant: return "nonParticipant"
+    default: return "unknown"
     }
 }
 
