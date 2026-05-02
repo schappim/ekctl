@@ -9,7 +9,7 @@ struct Ekctl: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ekctl",
         abstract: "A command-line tool for managing macOS Calendar events and Reminders using EventKit.",
-        version: "1.2.0",
+        version: "1.3.0",
         subcommands: [List.self, Show.self, Add.self, Delete.self, Complete.self, Alias.self],
         defaultSubcommand: List.self
     )
@@ -172,6 +172,36 @@ struct AddEvent: ParsableCommand {
     @Flag(name: .long, help: "Mark as all-day event.")
     var allDay: Bool = false
 
+    @Option(name: .long, help: "Recurrence frequency: daily, weekly, monthly, or yearly.")
+    var frequency: String?
+
+    @Option(name: .long, help: "Recurrence interval (default 1). E.g., 2 with weekly = every 2 weeks.")
+    var interval: Int?
+
+    @Option(name: .long, parsing: .unconditional, help: "Days of the week (comma-separated). Plain: mon,tue,fri. With week number: 1mon (first Monday), -1fri (last Friday).")
+    var daysOfTheWeek: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Days of the month (comma-separated, 1-31 or negative from end: -1 = last day).")
+    var daysOfTheMonth: String?
+
+    @Option(name: .long, help: "Months of the year (comma-separated, 1-12).")
+    var monthsOfTheYear: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Weeks of the year (comma-separated, 1-53 or negative from end).")
+    var weeksOfTheYear: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Days of the year (comma-separated, 1-366 or negative from end).")
+    var daysOfTheYear: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Set positions to filter expanded rules (comma-separated, e.g., 1,-1).")
+    var setPositions: String?
+
+    @Option(name: .long, help: "End recurrence after this date (ISO8601 format).")
+    var recurrenceEndDate: String?
+
+    @Option(name: .long, help: "End recurrence after this many occurrences.")
+    var recurrenceCount: Int?
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
@@ -185,6 +215,15 @@ struct AddEvent: ParsableCommand {
             throw ExitCode.failure
         }
 
+        var parsedRecurrenceEndDate: Date?
+        if let recurrenceEndDate = recurrenceEndDate {
+            guard let parsed = ISO8601DateFormatter().date(from: recurrenceEndDate) else {
+                print(JSONOutput.error("Invalid --recurrence-end-date format. Use ISO8601.").toJSON())
+                throw ExitCode.failure
+            }
+            parsedRecurrenceEndDate = parsed
+        }
+
         let calendarID = ConfigManager.resolveAlias(calendar)
         let result = manager.addEvent(
             calendarID: calendarID,
@@ -193,7 +232,17 @@ struct AddEvent: ParsableCommand {
             endDate: endDate,
             location: location,
             notes: notes,
-            allDay: allDay
+            allDay: allDay,
+            frequency: frequency,
+            interval: interval ?? 1,
+            daysOfTheWeek: daysOfTheWeek,
+            daysOfTheMonth: daysOfTheMonth,
+            monthsOfTheYear: monthsOfTheYear,
+            weeksOfTheYear: weeksOfTheYear,
+            daysOfTheYear: daysOfTheYear,
+            setPositions: setPositions,
+            recurrenceEndDate: parsedRecurrenceEndDate,
+            recurrenceCount: recurrenceCount
         )
         print(result.toJSON())
     }

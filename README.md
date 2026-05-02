@@ -5,6 +5,7 @@ A native macOS command-line tool for managing Calendar events and Reminders usin
 ## Features
 
 - List, create, and delete calendar events
+- **Recurring events** - Create events with daily, weekly, monthly, or yearly recurrence rules
 - List, create, complete, and delete reminders
 - **Calendar aliases** - Use friendly names instead of long IDs
 - JSON output for easy parsing and scripting
@@ -208,6 +209,82 @@ ekctl add event \
   --end "2026-03-02T00:00:00Z" \
   --all-day
 ```
+
+#### Recurring Events
+
+Create events that repeat on a schedule using `--frequency` and related options:
+
+```bash
+# Daily standup
+ekctl add event \
+  --calendar work \
+  --title "Daily Standup" \
+  --start "2026-02-01T09:00:00Z" \
+  --end "2026-02-01T09:15:00Z" \
+  --frequency daily
+
+# Weekly team meeting every Monday and Wednesday
+ekctl add event \
+  --calendar work \
+  --title "Team Sync" \
+  --start "2026-02-03T14:00:00Z" \
+  --end "2026-02-03T15:00:00Z" \
+  --frequency weekly \
+  --days-of-the-week mon,wed
+
+# Biweekly 1:1 on Fridays
+ekctl add event \
+  --calendar work \
+  --title "1:1 with Manager" \
+  --start "2026-02-07T11:00:00Z" \
+  --end "2026-02-07T11:30:00Z" \
+  --frequency weekly \
+  --interval 2 \
+  --days-of-the-week fri
+
+# Monthly on the 15th, ending after 6 occurrences
+ekctl add event \
+  --calendar work \
+  --title "Monthly Report Due" \
+  --start "2026-02-15T09:00:00Z" \
+  --end "2026-02-15T10:00:00Z" \
+  --frequency monthly \
+  --days-of-the-month 15 \
+  --recurrence-count 6
+
+# Last Friday of every month
+ekctl add event \
+  --calendar work \
+  --title "Month-End Review" \
+  --start "2026-01-30T16:00:00Z" \
+  --end "2026-01-30T17:00:00Z" \
+  --frequency monthly \
+  --days-of-the-week -1fri
+
+# Yearly event ending on a specific date
+ekctl add event \
+  --calendar personal \
+  --title "Annual Checkup" \
+  --start "2026-03-10T10:00:00Z" \
+  --end "2026-03-10T11:00:00Z" \
+  --frequency yearly \
+  --recurrence-end-date "2030-12-31T23:59:59Z"
+```
+
+**Recurrence options:**
+
+| Option | Description |
+|--------|-------------|
+| `--frequency` | **Required for recurrence.** `daily`, `weekly`, `monthly`, or `yearly` |
+| `--interval` | Repeat every N periods (default: 1). E.g., `2` with `weekly` = every 2 weeks |
+| `--days-of-the-week` | Comma-separated days: `mon,tue,wed,thu,fri,sat,sun`. Prefix with week number for monthly rules: `1mon` (first Monday), `-1fri` (last Friday) |
+| `--days-of-the-month` | Comma-separated days (1–31). Negative values count from end: `-1` = last day |
+| `--months-of-the-year` | Comma-separated months (1–12) |
+| `--weeks-of-the-year` | Comma-separated weeks (1–53 or negative from end) |
+| `--days-of-the-year` | Comma-separated days (1–366 or negative from end) |
+| `--set-positions` | Filter expanded recurrence rules (e.g., `1,-1` for first and last) |
+| `--recurrence-end-date` | Stop recurring after this date (ISO 8601) |
+| `--recurrence-count` | Stop recurring after this many occurrences |
 
 Output:
 ```json

@@ -155,7 +155,17 @@ class EventKitManager {
         endDate: Date,
         location: String?,
         notes: String?,
-        allDay: Bool
+        allDay: Bool,
+        frequency: String? = nil,
+        interval: Int = 1,
+        daysOfTheWeek: String? = nil,
+        daysOfTheMonth: String? = nil,
+        monthsOfTheYear: String? = nil,
+        weeksOfTheYear: String? = nil,
+        daysOfTheYear: String? = nil,
+        setPositions: String? = nil,
+        recurrenceEndDate: Date? = nil,
+        recurrenceCount: Int? = nil
     ) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
@@ -173,6 +183,56 @@ class EventKitManager {
         event.location = location
         event.notes = notes
         event.isAllDay = allDay
+
+        if let frequency = frequency {
+            guard let parsedFrequency = parseFrequency(frequency) else {
+                return JSONOutput.error("Invalid frequency '\(frequency)'. Use: daily, weekly, monthly, or yearly.")
+            }
+
+            var parsedDaysOfTheWeek: [EKRecurrenceDayOfWeek]?
+            if let raw = daysOfTheWeek {
+                let parsed = raw.split(separator: ",").compactMap { parseDayOfWeek(String($0)) }
+                if parsed.isEmpty {
+                    return JSONOutput.error("Invalid --days-of-the-week. Use: mon,tue,wed,thu,fri,sat,sun or with week number: 1mon, -1fri.")
+                }
+                parsedDaysOfTheWeek = parsed
+            }
+
+            let (adjustedStartDate, adjustedEndDate) = adjustStartDateForRecurrence(
+                startDate: startDate,
+                endDate: endDate,
+                frequency: parsedFrequency,
+                daysOfTheWeek: parsedDaysOfTheWeek
+            )
+            event.startDate = adjustedStartDate
+            event.endDate = adjustedEndDate
+
+            let parsedDaysOfTheMonth = parseIntList(daysOfTheMonth)
+            let parsedMonthsOfTheYear = parseIntList(monthsOfTheYear)
+            let parsedWeeksOfTheYear = parseIntList(weeksOfTheYear)
+            let parsedDaysOfTheYear = parseIntList(daysOfTheYear)
+            let parsedSetPositions = parseIntList(setPositions)
+
+            var end: EKRecurrenceEnd?
+            if let endDate = recurrenceEndDate {
+                end = EKRecurrenceEnd(end: endDate)
+            } else if let count = recurrenceCount {
+                end = EKRecurrenceEnd(occurrenceCount: count)
+            }
+
+            let rule = EKRecurrenceRule(
+                recurrenceWith: parsedFrequency,
+                interval: interval,
+                daysOfTheWeek: parsedDaysOfTheWeek,
+                daysOfTheMonth: parsedDaysOfTheMonth,
+                monthsOfTheYear: parsedMonthsOfTheYear,
+                weeksOfTheYear: parsedWeeksOfTheYear,
+                daysOfTheYear: parsedDaysOfTheYear,
+                setPositions: parsedSetPositions,
+                end: end
+            )
+            event.addRecurrenceRule(rule)
+        }
 
         do {
             try eventStore.save(event, span: .thisEvent)
@@ -375,7 +435,221 @@ class EventKitManager {
         dict["hasAlarms"] = event.hasAlarms
         dict["hasRecurrenceRules"] = event.hasRecurrenceRules
 
+        if event.hasRecurrenceRules, let rules = event.recurrenceRules {
+            dict["recurrenceRules"] = rules.map { recurrenceRuleToDict($0) }
+        }
+
         return dict
+    }
+
+    private func recurrenceRuleToDict(_ rule: EKRecurrenceRule) -> [String: Any] {
+        var dict: [String: Any] = [
+            "frequency": frequencyString(rule.frequency),
+            "interval": rule.interval
+        ]
+
+        if let end = rule.recurrenceEnd {
+            if let endDate = end.endDate {
+                let formatter = localDateFormatter()
+                dict["end"] = ["type": "date", "date": formatter.string(from: endDate)]
+            } else if end.occurrenceCount > 0 {
+                dict["end"] = ["type": "count", "count": end.occurrenceCount]
+            }
+        }
+
+        if let days = rule.daysOfTheWeek {
+            dict["daysOfTheWeek"] = days.map { day -> [String: Any] in
+                var d: [String: Any] = ["dayOfTheWeek": weekdayString(day.dayOfTheWeek)]
+                if day.weekNumber != 0 {
+                    d["weekNumber"] = day.weekNumber
+                }
+                return d
+            }
+        }
+        if let days = rule.daysOfTheMonth {
+            dict["daysOfTheMonth"] = days.map { $0.intValue }
+        }
+        if let months = rule.monthsOfTheYear {
+            dict["monthsOfTheYear"] = months.map { $0.intValue }
+        }
+        if let weeks = rule.weeksOfTheYear {
+            dict["weeksOfTheYear"] = weeks.map { $0.intValue }
+        }
+        if let days = rule.daysOfTheYear {
+            dict["daysOfTheYear"] = days.map { $0.intValue }
+        }
+        if let positions = rule.setPositions {
+            dict["setPositions"] = positions.map { $0.intValue }
+        }
+
+        return dict
+    }
+
+    private func frequencyString(_ frequency: EKRecurrenceFrequency) -> String {
+        switch frequency {
+        case .daily: return "daily"
+        case .weekly: return "weekly"
+        case .monthly: return "monthly"
+        case .yearly: return "yearly"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private func adjustStartDateForRecurrence(
+        startDate: Date,
+        endDate: Date,
+        frequency: EKRecurrenceFrequency,
+        daysOfTheWeek: [EKRecurrenceDayOfWeek]?
+    ) -> (start: Date, end: Date) {
+        guard frequency == .monthly,
+              let days = daysOfTheWeek,
+              !days.isEmpty,
+              days.allSatisfy({ $0.weekNumber != 0 }) else {
+            return (startDate, endDate)
+        }
+
+        let cal = Calendar.current
+        let duration = endDate.timeIntervalSince(startDate)
+
+        for monthOffset in 0..<13 {
+            guard let refDate = cal.date(byAdding: .month, value: monthOffset, to: startDate) else { continue }
+            let year = cal.component(.year, from: refDate)
+            let month = cal.component(.month, from: refDate)
+
+            var earliest: Date?
+            for day in days {
+                guard let candidate = nthWeekdayInMonth(
+                    weekday: day.dayOfTheWeek,
+                    weekNumber: day.weekNumber,
+                    year: year,
+                    month: month
+                ) else { continue }
+
+                var comps = cal.dateComponents([.year, .month, .day], from: candidate)
+                let timeComps = cal.dateComponents([.hour, .minute, .second], from: startDate)
+                comps.hour = timeComps.hour
+                comps.minute = timeComps.minute
+                comps.second = timeComps.second
+                guard let withTime = cal.date(from: comps) else { continue }
+
+                if withTime >= startDate {
+                    if earliest == nil || withTime < earliest! {
+                        earliest = withTime
+                    }
+                }
+            }
+
+            if let adjusted = earliest {
+                return (adjusted, adjusted.addingTimeInterval(duration))
+            }
+        }
+
+        return (startDate, endDate)
+    }
+
+    private func nthWeekdayInMonth(weekday: EKWeekday, weekNumber: Int, year: Int, month: Int) -> Date? {
+        let cal = Calendar.current
+        let calWeekday = ekWeekdayToCalendarWeekday(weekday)
+
+        if weekNumber > 0 {
+            var comps = DateComponents()
+            comps.year = year
+            comps.month = month
+            comps.weekday = calWeekday
+            comps.weekdayOrdinal = weekNumber
+            guard let date = cal.date(from: comps) else { return nil }
+            guard cal.component(.month, from: date) == month else { return nil }
+            return date
+        }
+
+        var firstOfMonth = DateComponents()
+        firstOfMonth.year = year
+        firstOfMonth.month = month
+        firstOfMonth.day = 1
+        guard let first = cal.date(from: firstOfMonth),
+              let range = cal.range(of: .day, in: .month, for: first) else { return nil }
+
+        var lastDayComps = DateComponents()
+        lastDayComps.year = year
+        lastDayComps.month = month
+        lastDayComps.day = range.count
+        guard let lastDay = cal.date(from: lastDayComps) else { return nil }
+
+        let lastWeekday = cal.component(.weekday, from: lastDay)
+        var diff = lastWeekday - calWeekday
+        if diff < 0 { diff += 7 }
+
+        let daysBack = diff + (-(weekNumber + 1)) * 7
+        return cal.date(byAdding: .day, value: -daysBack, to: lastDay)
+    }
+
+    private func ekWeekdayToCalendarWeekday(_ weekday: EKWeekday) -> Int {
+        switch weekday {
+        case .sunday: return 1
+        case .monday: return 2
+        case .tuesday: return 3
+        case .wednesday: return 4
+        case .thursday: return 5
+        case .friday: return 6
+        case .saturday: return 7
+        @unknown default: return 1
+        }
+    }
+
+    private func parseFrequency(_ string: String) -> EKRecurrenceFrequency? {
+        switch string.lowercased() {
+        case "daily": return .daily
+        case "weekly": return .weekly
+        case "monthly": return .monthly
+        case "yearly": return .yearly
+        default: return nil
+        }
+    }
+
+    private func weekdayString(_ weekday: EKWeekday) -> String {
+        switch weekday {
+        case .sunday: return "sun"
+        case .monday: return "mon"
+        case .tuesday: return "tue"
+        case .wednesday: return "wed"
+        case .thursday: return "thu"
+        case .friday: return "fri"
+        case .saturday: return "sat"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private func parseWeekday(_ string: String) -> EKWeekday? {
+        switch string.lowercased() {
+        case "sun": return .sunday
+        case "mon": return .monday
+        case "tue": return .tuesday
+        case "wed": return .wednesday
+        case "thu": return .thursday
+        case "fri": return .friday
+        case "sat": return .saturday
+        default: return nil
+        }
+    }
+
+    private func parseDayOfWeek(_ string: String) -> EKRecurrenceDayOfWeek? {
+        let s = string.trimmingCharacters(in: .whitespaces).lowercased()
+        if s.count == 3, let weekday = parseWeekday(s) {
+            return EKRecurrenceDayOfWeek(weekday)
+        }
+        let letters = s.suffix(3)
+        let digits = s.dropLast(3)
+        guard let weekday = parseWeekday(String(letters)),
+              let weekNumber = Int(digits) else {
+            return nil
+        }
+        return EKRecurrenceDayOfWeek(weekday, weekNumber: weekNumber)
+    }
+
+    private func parseIntList(_ string: String?) -> [NSNumber]? {
+        guard let string = string else { return nil }
+        let numbers = string.split(separator: ",").compactMap { Int(String($0).trimmingCharacters(in: .whitespaces)) }
+        return numbers.isEmpty ? nil : numbers.map { NSNumber(value: $0) }
     }
 
     /// Converts an EKReminder to a dictionary for JSON output
