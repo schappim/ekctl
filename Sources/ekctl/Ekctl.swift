@@ -11,7 +11,7 @@ struct Ekctl: ParsableCommand {
         commandName: "ekctl",
         abstract:
             "A command-line tool for managing macOS Calendar events and Reminders using EventKit.",
-        version: "1.3.0",
+        version: "1.4.0",
         subcommands: [
             List.self, Show.self, Add.self, Update.self, Delete.self, Complete.self, Alias.self,
             CalendarCmd.self,
