@@ -547,6 +547,218 @@ final class EventFilterTests: XCTestCase {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// DateRanges tests
+///
+/// Locks down the pure date math behind the `today` / `tomorrow` / `next`
+/// convenience subcommands. The helpers take `now` and `calendar` as
+/// parameters so we can pin them to fixed instants and explicit timezones
+/// rather than wallclock + system zone.
+final class DateRangesTests: XCTestCase {
+
+    /// Calendar fixed to a stable timezone so tests don't drift with whoever's
+    /// running them. America/New_York chosen because it crosses both DST
+    /// transitions during the year, useful for the DST tests below.
+    private func calendar(in tzID: String = "America/New_York") -> Calendar {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: tzID)!
+        return cal
+    }
+
+    /// Build a Date from a known wallclock in the given calendar.
+    private func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int, _ min: Int,
+                      in cal: Calendar) -> Date {
+        var components = DateComponents()
+        components.year = y; components.month = m; components.day = d
+        components.hour = h; components.minute = min
+        return cal.date(from: components)!
+    }
+
+    // MARK: - today()
+
+    func testTodayStartsAtMidnightLocal() {
+        let cal = calendar()
+        let now = date(2026, 3, 15, 14, 30, in: cal)  // 2:30 PM local
+        let (start, _) = DateRanges.today(now: now, calendar: cal)
+
+        let components = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: start)
+        XCTAssertEqual(components.year, 2026)
+        XCTAssertEqual(components.month, 3)
+        XCTAssertEqual(components.day, 15)
+        XCTAssertEqual(components.hour, 0)
+        XCTAssertEqual(components.minute, 0)
+        XCTAssertEqual(components.second, 0)
+    }
+
+    func testTodayEndsAtMidnightOfNextDay() {
+        let cal = calendar()
+        let now = date(2026, 3, 15, 14, 30, in: cal)
+        let (_, end) = DateRanges.today(now: now, calendar: cal)
+
+        let components = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: end)
+        XCTAssertEqual(components.year, 2026)
+        XCTAssertEqual(components.month, 3)
+        XCTAssertEqual(components.day, 16)
+        XCTAssertEqual(components.hour, 0)
+        XCTAssertEqual(components.minute, 0)
+        XCTAssertEqual(components.second, 0)
+    }
+
+    func testTodayBoundaryNearMidnight() {
+        // Calling at 23:59 should still return THAT day's range, not next day's.
+        let cal = calendar()
+        let now = date(2026, 3, 15, 23, 59, in: cal)
+        let (start, end) = DateRanges.today(now: now, calendar: cal)
+
+        let startDay = cal.component(.day, from: start)
+        let endDay = cal.component(.day, from: end)
+        XCTAssertEqual(startDay, 15)
+        XCTAssertEqual(endDay, 16)
+    }
+
+    func testTodayHonoursTimezone() {
+        // Same instant, viewed from two timezones — should produce DIFFERENT
+        // local day ranges. This is the whole point of using Calendar.current
+        // for date math: it follows the user's zone.
+        let nyCal = calendar(in: "America/New_York")
+        let tokyoCal = calendar(in: "Asia/Tokyo")
+
+        // 03:00 UTC on Jan 1 2026 → 22:00 Dec 31 in NY, 12:00 Jan 1 in Tokyo
+        var utcCal = Calendar(identifier: .gregorian)
+        utcCal.timeZone = TimeZone(identifier: "UTC")!
+        let now = date(2026, 1, 1, 3, 0, in: utcCal)
+
+        let (nyStart, _) = DateRanges.today(now: now, calendar: nyCal)
+        let (tokyoStart, _) = DateRanges.today(now: now, calendar: tokyoCal)
+
+        XCTAssertEqual(nyCal.component(.day, from: nyStart), 31, "NY observer sees Dec 31")
+        XCTAssertEqual(tokyoCal.component(.day, from: tokyoStart), 1, "Tokyo observer sees Jan 1")
+    }
+
+    // MARK: - tomorrow()
+
+    func testTomorrowStartsAtMidnightOfNextDay() {
+        let cal = calendar()
+        let now = date(2026, 3, 15, 14, 30, in: cal)
+        let (start, _) = DateRanges.tomorrow(now: now, calendar: cal)
+
+        let components = cal.dateComponents([.year, .month, .day, .hour, .minute], from: start)
+        XCTAssertEqual(components.day, 16)
+        XCTAssertEqual(components.hour, 0)
+        XCTAssertEqual(components.minute, 0)
+    }
+
+    func testTomorrowEndsAtMidnightOfDayAfter() {
+        let cal = calendar()
+        let now = date(2026, 3, 15, 14, 30, in: cal)
+        let (_, end) = DateRanges.tomorrow(now: now, calendar: cal)
+
+        let components = cal.dateComponents([.year, .month, .day, .hour, .minute], from: end)
+        XCTAssertEqual(components.day, 17)
+        XCTAssertEqual(components.hour, 0)
+        XCTAssertEqual(components.minute, 0)
+    }
+
+    func testTomorrowRollsOverMonthBoundary() {
+        let cal = calendar()
+        let now = date(2026, 1, 31, 10, 0, in: cal)
+        let (start, end) = DateRanges.tomorrow(now: now, calendar: cal)
+
+        XCTAssertEqual(cal.component(.month, from: start), 2)
+        XCTAssertEqual(cal.component(.day, from: start), 1)
+        XCTAssertEqual(cal.component(.month, from: end), 2)
+        XCTAssertEqual(cal.component(.day, from: end), 2)
+    }
+
+    func testTomorrowRollsOverYearBoundary() {
+        let cal = calendar()
+        let now = date(2026, 12, 31, 10, 0, in: cal)
+        let (start, _) = DateRanges.tomorrow(now: now, calendar: cal)
+
+        XCTAssertEqual(cal.component(.year, from: start), 2027)
+        XCTAssertEqual(cal.component(.month, from: start), 1)
+        XCTAssertEqual(cal.component(.day, from: start), 1)
+    }
+
+    // MARK: - DST handling
+
+    /// Spring-forward day in America/New_York: 2026-03-08 has only 23 hours.
+    /// Using calendar arithmetic (not 86400-second arithmetic) is the
+    /// difference between getting the right midnight and getting 1am.
+    func testTodayCorrectAcrossSpringForward() {
+        let cal = calendar(in: "America/New_York")
+        // Call from inside the short day.
+        let now = date(2026, 3, 8, 15, 0, in: cal)
+        let (start, end) = DateRanges.today(now: now, calendar: cal)
+
+        // Both midnight markers — the end isn't `start + 24h`, it's start of
+        // the next local day. Calendar arithmetic handles this; raw 86400
+        // wouldn't.
+        XCTAssertEqual(cal.component(.hour, from: start), 0)
+        XCTAssertEqual(cal.component(.hour, from: end), 0)
+        XCTAssertEqual(cal.component(.day, from: start), 8)
+        XCTAssertEqual(cal.component(.day, from: end), 9)
+
+        // Sanity: the actual wallclock difference IS 23 hours on this day.
+        let secondsBetween = end.timeIntervalSince(start)
+        XCTAssertEqual(secondsBetween, 23 * 3600, accuracy: 1.0,
+                       "spring-forward day is 23h, not 24")
+    }
+
+    /// Fall-back day in America/New_York: 2026-11-01 has 25 hours.
+    func testTodayCorrectAcrossFallBack() {
+        let cal = calendar(in: "America/New_York")
+        let now = date(2026, 11, 1, 15, 0, in: cal)
+        let (start, end) = DateRanges.today(now: now, calendar: cal)
+
+        XCTAssertEqual(cal.component(.hour, from: start), 0)
+        XCTAssertEqual(cal.component(.hour, from: end), 0)
+        XCTAssertEqual(cal.component(.day, from: start), 1)
+        XCTAssertEqual(cal.component(.day, from: end), 2)
+
+        let secondsBetween = end.timeIntervalSince(start)
+        XCTAssertEqual(secondsBetween, 25 * 3600, accuracy: 1.0,
+                       "fall-back day is 25h, not 24")
+    }
+
+    // MARK: - nextWindow()
+
+    func testNextWindowStartsAtNow() {
+        let cal = calendar()
+        let now = date(2026, 3, 15, 14, 30, 45, in: cal)
+        let (start, _) = DateRanges.nextWindow(now: now, days: 7, calendar: cal)
+        XCTAssertEqual(start, now, "next-window start should be exactly `now`, not midnight")
+    }
+
+    func testNextWindowEndIsNowPlusDays() {
+        let cal = calendar()
+        let now = date(2026, 3, 15, 14, 30, in: cal)
+        let (_, end) = DateRanges.nextWindow(now: now, days: 7, calendar: cal)
+        let endComponents = cal.dateComponents([.year, .month, .day, .hour, .minute], from: end)
+        XCTAssertEqual(endComponents.day, 22)
+        XCTAssertEqual(endComponents.hour, 14)
+        XCTAssertEqual(endComponents.minute, 30)
+    }
+
+    func testNextWindowHandlesYearRollover() {
+        let cal = calendar()
+        let now = date(2026, 12, 28, 10, 0, in: cal)
+        let (_, end) = DateRanges.nextWindow(now: now, days: 7, calendar: cal)
+        XCTAssertEqual(cal.component(.year, from: end), 2027)
+        XCTAssertEqual(cal.component(.month, from: end), 1)
+        XCTAssertEqual(cal.component(.day, from: end), 4)
+    }
+
+    private func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int, _ min: Int, _ sec: Int,
+                      in cal: Calendar) -> Date {
+        var components = DateComponents()
+        components.year = y; components.month = m; components.day = d
+        components.hour = h; components.minute = min; components.second = sec
+        return cal.date(from: components)!
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 final class ConfigManagerTests: XCTestCase {
     // ConfigManager uses static methods writing to ~/.ekctl/config.json.
     // We back up and restore the real config around each test so we don't

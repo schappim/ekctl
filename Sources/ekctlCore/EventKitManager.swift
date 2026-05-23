@@ -209,7 +209,9 @@ public class EventKitManager {
         from startDate: Date,
         to endDate: Date,
         search: String? = nil,
-        availability: AvailabilityFilter? = nil
+        availability: AvailabilityFilter? = nil,
+        sortedByStartAscending: Bool = false,
+        limit: Int? = nil
     ) -> JSONOutput {
         var calendars: [EKCalendar] = []
         for id in calendarIDs {
@@ -225,12 +227,17 @@ public class EventKitManager {
             calendars: calendars
         )
 
-        let events = eventStore.events(matching: predicate)
-        let filtered = events.filter { event in
+        var filtered = eventStore.events(matching: predicate).filter { event in
             EventFilter.matchesSearch(search, in: [event.title, event.location, event.notes])
             && EventFilter.matchesAvailability(
                 availability,
                 eventAvailability: Self.availabilityString(event.availability))
+        }
+        if sortedByStartAscending {
+            filtered.sort { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }
+        }
+        if let limit = limit, filtered.count > limit {
+            filtered = Array(filtered.prefix(limit))
         }
         let eventDicts = filtered.map { eventToDict($0) }
 

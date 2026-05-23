@@ -6,6 +6,7 @@ Native macOS command-line tool for managing Calendar events and Reminders using 
 
 - List, create, update, and delete calendar events
 - List, create, update, complete, and delete reminders
+- Quick date-range shortcuts: `ekctl today`, `ekctl tomorrow`, `ekctl next`
 - Search and filter (`--search`, `--availability busy`) without piping through jq
 - Calendar aliases (use friendly names instead of UUIDs)
 - JSON, CSV, or plain-text output (`--format json|csv|text`)
@@ -203,6 +204,36 @@ ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --search sta
   "status": "success"
 }
 ```
+
+### Quick date ranges: `today` / `tomorrow` / `next`
+
+Three top-level shortcuts wrap the most common `list events` queries with a pre-computed local date range. No more `date -u -v+1d` shell prelude (which is BSD-only and breaks on Linux):
+
+```bash
+# Events occurring today (local time)
+ekctl today --calendar work
+
+# Events occurring tomorrow
+ekctl tomorrow --calendar work
+
+# The single next upcoming event (looks 90 days ahead by default)
+ekctl next --calendar work
+
+# The next N events
+ekctl next --calendar work --count 5
+
+# Look further out
+ekctl next --calendar work --count 5 --days 365
+```
+
+All three accept the same filter / format flags as `list events` (`--search`, `--availability`, `--format`, and comma-separated `--calendar`), so they compose:
+
+```bash
+ekctl today --calendar work,personal --availability busy --format csv
+ekctl next --calendar work --search standup --count 3 --format text
+```
+
+`next` returns events sorted by start time ascending and includes events that are currently in progress (their `endDate` is still in the future).
 
 ### Show Event
 
@@ -546,13 +577,17 @@ echo $CALENDAR_ID
 ### List today's events
 
 ```bash
-TODAY=$(date -u +"%Y-%m-%dT00:00:00Z")
-TOMORROW=$(date -u -v+1d +"%Y-%m-%dT00:00:00Z")
+ekctl today --calendar "$CALENDAR_ID"
+```
 
-ekctl list events \
-  --calendar "$CALENDAR_ID" \
-  --from "$TODAY" \
-  --to "$TOMORROW"
+The `today` / `tomorrow` / `next` subcommands work out the date range locally so you don't have to wrangle `date -v+1d` (which is BSD-only and breaks under Linux), and they accept the same `--search`, `--availability`, and `--format` flags as `list events`:
+
+```bash
+# Tomorrow's busy meetings as CSV
+ekctl tomorrow --calendar work --availability busy --format csv
+
+# Next 3 events that mention "standup"
+ekctl next --calendar work --count 3 --search standup
 ```
 
 ### Create event from variables

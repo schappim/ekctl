@@ -15,6 +15,7 @@ struct Ekctl: ParsableCommand {
         subcommands: [
             List.self, Show.self, Add.self, Update.self, Delete.self, Complete.self, Alias.self,
             CalendarCmd.self,
+            Today.self, Tomorrow.self, Next.self,
         ],
         defaultSubcommand: List.self
     )
@@ -871,5 +872,171 @@ struct AliasList: ParsableCommand {
                 "count": aliasList.count,
                 "configPath": ConfigManager.configPath(),
             ]).format(outputFormat.format))
+    }
+}
+
+// MARK: - Quick Date-Range Commands
+//
+// Convenience subcommands that wrap `list events` with a pre-computed local
+// date range, removing the BSD-only `date -v+1d …` prelude that every script
+// otherwise needs. All three accept the same filter/format flags as
+// `list events`, so they compose cleanly with `--search`, `--availability`,
+// and `--format`.
+
+struct Today: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "today",
+        abstract: "List events occurring today (local time)."
+    )
+
+    @Option(
+        name: .long,
+        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal)."
+    )
+    var calendar: String
+
+    @Option(
+        name: .long,
+        help: "Case-insensitive substring filter applied across title, location, and notes."
+    )
+    var search: String?
+
+    @Option(
+        name: .long,
+        help: "Filter events by EventKit availability (busy, free, tentative, unavailable, notSupported)."
+    )
+    var availability: AvailabilityFilter?
+
+    @OptionGroup var outputFormat: OutputFormatOptions
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+
+        let (start, end) = DateRanges.today()
+        let calendarIDs = calendar
+            .split(separator: ",")
+            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+
+        let result = manager.listEvents(
+            calendarIDs: calendarIDs,
+            from: start,
+            to: end,
+            search: search,
+            availability: availability)
+        print(result.format(outputFormat.format))
+    }
+}
+
+struct Tomorrow: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "tomorrow",
+        abstract: "List events occurring tomorrow (local time)."
+    )
+
+    @Option(
+        name: .long,
+        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal)."
+    )
+    var calendar: String
+
+    @Option(
+        name: .long,
+        help: "Case-insensitive substring filter applied across title, location, and notes."
+    )
+    var search: String?
+
+    @Option(
+        name: .long,
+        help: "Filter events by EventKit availability (busy, free, tentative, unavailable, notSupported)."
+    )
+    var availability: AvailabilityFilter?
+
+    @OptionGroup var outputFormat: OutputFormatOptions
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+
+        let (start, end) = DateRanges.tomorrow()
+        let calendarIDs = calendar
+            .split(separator: ",")
+            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+
+        let result = manager.listEvents(
+            calendarIDs: calendarIDs,
+            from: start,
+            to: end,
+            search: search,
+            availability: availability)
+        print(result.format(outputFormat.format))
+    }
+}
+
+struct Next: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "next",
+        abstract: "Show upcoming events from now, sorted by start time."
+    )
+
+    @Option(
+        name: .long,
+        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal)."
+    )
+    var calendar: String
+
+    @Option(
+        name: .long,
+        help: "Number of upcoming events to return (default: 1)."
+    )
+    var count: Int = 1
+
+    @Option(
+        name: .long,
+        help: "Lookahead window in days. Events further out than this are ignored (default: 90)."
+    )
+    var days: Int = 90
+
+    @Option(
+        name: .long,
+        help: "Case-insensitive substring filter applied across title, location, and notes."
+    )
+    var search: String?
+
+    @Option(
+        name: .long,
+        help: "Filter events by EventKit availability (busy, free, tentative, unavailable, notSupported)."
+    )
+    var availability: AvailabilityFilter?
+
+    @OptionGroup var outputFormat: OutputFormatOptions
+
+    func run() throws {
+        let manager = EventKitManager()
+        try manager.requestAccess()
+
+        guard count > 0 else {
+            print(JSONOutput.error("--count must be a positive integer.").format(outputFormat.format))
+            throw ExitCode.failure
+        }
+        guard days > 0 else {
+            print(JSONOutput.error("--days must be a positive integer.").format(outputFormat.format))
+            throw ExitCode.failure
+        }
+
+        let (start, end) = DateRanges.nextWindow(days: days)
+        let calendarIDs = calendar
+            .split(separator: ",")
+            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+
+        let result = manager.listEvents(
+            calendarIDs: calendarIDs,
+            from: start,
+            to: end,
+            search: search,
+            availability: availability,
+            sortedByStartAscending: true,
+            limit: count)
+        print(result.format(outputFormat.format))
     }
 }
