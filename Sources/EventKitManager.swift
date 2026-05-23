@@ -269,10 +269,16 @@ class EventKitManager {
         reminder.notes = notes
 
         if let dueDate = dueDate {
-            reminder.dueDateComponents = Calendar.current.dateComponents(
+            var dueComponents = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute, .second],
                 from: dueDate
             )
+            // Attach an explicit time zone so the due date is stored zoned, not
+            // floating. A floating dueDateComponents (timeZone == nil) is rendered
+            // shifted by the host's UTC offset on iCloud Web, while native EventKit
+            // clients treat it as local time.
+            dueComponents.timeZone = TimeZone.current
+            reminder.dueDateComponents = dueComponents
         }
 
         do {
