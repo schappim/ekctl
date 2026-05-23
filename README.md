@@ -154,6 +154,12 @@ Aliases are stored in `~/.ekctl/config.json`.
 ekctl list events --calendar work --from "2026-01-01T00:00:00Z" --to "2026-01-31T23:59:59Z"
 ```
 
+To fetch events from multiple calendars in a single call, pass a comma-separated list of IDs or aliases. Each event's source calendar is reported in its `calendar` field, so the merged stream is still distinguishable:
+
+```bash
+ekctl list events --calendar work,personal --from "2026-01-01T00:00:00Z" --to "2026-01-31T23:59:59Z"
+```
+
 **Output:**
 
 ```json
@@ -173,7 +179,9 @@ ekctl list events --calendar work --from "2026-01-01T00:00:00Z" --to "2026-01-31
       "notes": null,
       "allDay": false,
       "hasAlarms": true,
-      "hasRecurrenceRules": false
+      "hasRecurrenceRules": false,
+      "availability": "busy",
+      "attendees": []
     }
   ],
   "status": "success"

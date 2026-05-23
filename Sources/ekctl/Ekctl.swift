@@ -49,7 +49,11 @@ struct ListEvents: ParsableCommand {
         abstract: "List events in a calendar within a date range."
     )
 
-    @Option(name: .long, help: "The calendar ID or alias.")
+    @Option(
+        name: .long,
+        help:
+            "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal). Each event's source calendar is reported in its JSON output."
+    )
     var calendar: String
 
     @Option(name: .long, help: "Start date in ISO8601 format (e.g., 2026-02-01T00:00:00Z).")
@@ -77,8 +81,12 @@ struct ListEvents: ParsableCommand {
             throw ExitCode.failure
         }
 
-        let calendarID = ConfigManager.resolveAlias(calendar)
-        let result = manager.listEvents(calendarID: calendarID, from: startDate, to: endDate)
+        let calendarIDs = calendar
+            .split(separator: ",")
+            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+
+        let result = manager.listEvents(
+            calendarIDs: calendarIDs, from: startDate, to: endDate)
         print(result.toJSON())
     }
 }

@@ -204,21 +204,30 @@ public class EventKitManager {
     // MARK: - Event Operations
 
     /// Lists events in a calendar within a date range
-    public func listEvents(calendarID: String, from startDate: Date, to endDate: Date) -> JSONOutput {
-        guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
-            return JSONOutput.error("Calendar not found with ID: \(calendarID)")
+    public func listEvents(calendarIDs: [String], from startDate: Date, to endDate: Date) -> JSONOutput {
+        var calendars: [EKCalendar] = []
+        for id in calendarIDs {
+            guard let calendar = eventStore.calendar(withIdentifier: id) else {
+                return JSONOutput.error("Calendar not found with ID: \(id)")
+            }
+            calendars.append(calendar)
         }
 
         let predicate = eventStore.predicateForEvents(
             withStart: startDate,
             end: endDate,
-            calendars: [calendar]
+            calendars: calendars
         )
 
         let events = eventStore.events(matching: predicate)
         let eventDicts = events.map { eventToDict($0) }
 
         return JSONOutput.success(["events": eventDicts, "count": eventDicts.count])
+    }
+
+    /// Convenience overload that accepts a single calendar ID.
+    public func listEvents(calendarID: String, from startDate: Date, to endDate: Date) -> JSONOutput {
+        return listEvents(calendarIDs: [calendarID], from: startDate, to: endDate)
     }
 
     /// Shows details of a specific event
@@ -688,6 +697,11 @@ public class EventKitManager {
     /// Creates a date formatter that outputs ISO 8601 format in the user's local timezone
     private func localDateFormatter() -> DateFormatter {
         let formatter = DateFormatter()
+        // POSIX locale forces 24-hour `HH` to actually mean 24-hour, regardless of the
+        // user's "Use 24-hour time" system preference (Apple QA1480). Without this, PM
+        // times silently render as 12-hour without an AM/PM marker on locales like en_GB
+        // — e.g. 16:00 becomes "4:00" (see issue #8).
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"  // ISO 8601 with timezone offset
         formatter.timeZone = TimeZone.current
         return formatter
@@ -729,6 +743,15 @@ public class EventKitManager {
 
         dict["hasAlarms"] = event.hasAlarms
         dict["hasRecurrenceRules"] = event.hasRecurrenceRules
+
+        switch event.availability {
+        case .busy: dict["availability"] = "busy"
+        case .free: dict["availability"] = "free"
+        case .tentative: dict["availability"] = "tentative"
+        case .unavailable: dict["availability"] = "unavailable"
+        case .notSupported: dict["availability"] = "notSupported"
+        @unknown default: dict["availability"] = "unknown"
+        }
 
         if let attendees = event.attendees, !attendees.isEmpty {
             dict["attendees"] = attendees.map { participant -> [String: Any] in
