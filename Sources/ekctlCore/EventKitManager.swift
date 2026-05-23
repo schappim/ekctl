@@ -546,10 +546,16 @@ public class EventKitManager {
         reminder.notes = notes
 
         if let dueDate = dueDate {
-            reminder.dueDateComponents = Calendar.current.dateComponents(
+            var dueComponents = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute, .second],
                 from: dueDate
             )
+            // Attach an explicit time zone so the due date is stored zoned, not
+            // floating. A floating dueDateComponents (timeZone == nil) is rendered
+            // shifted by the host's UTC offset on iCloud Web, while native EventKit
+            // clients treat it as local time.
+            dueComponents.timeZone = TimeZone.current
+            reminder.dueDateComponents = dueComponents
         }
 
         do {
@@ -586,10 +592,14 @@ public class EventKitManager {
             reminder.completionDate = completed ? Date() : nil
         }
         if let dueDate = dueDate {
-            reminder.dueDateComponents = Calendar.current.dateComponents(
+            var dueComponents = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute, .second],
                 from: dueDate
             )
+            // Attach an explicit time zone so the due date is stored zoned, not
+            // floating (see addReminder for full explanation).
+            dueComponents.timeZone = TimeZone.current
+            reminder.dueDateComponents = dueComponents
         }
 
         do {
@@ -720,6 +730,24 @@ public class EventKitManager {
         dict["hasAlarms"] = event.hasAlarms
         dict["hasRecurrenceRules"] = event.hasRecurrenceRules
 
+        if let attendees = event.attendees, !attendees.isEmpty {
+            dict["attendees"] = attendees.map { participant -> [String: Any] in
+                var entry: [String: Any] = [
+                    "name": participant.name ?? "",
+                    "status": participantStatusString(participant.participantStatus),
+                    "role": participantRoleString(participant.participantRole),
+                ]
+                // EKParticipant email is encoded in the URL as mailto:
+                let url = participant.url
+                if url.scheme == "mailto" {
+                    entry["email"] = url.absoluteString.replacingOccurrences(of: "mailto:", with: "")
+                }
+                return entry
+            }
+        } else {
+            dict["attendees"] = [] as [[String: Any]]
+        }
+
         return dict
     }
 
@@ -761,6 +789,31 @@ public class EventKitManager {
         }
 
         return dict
+    }
+}
+
+// MARK: - EKParticipant Helpers
+
+private func participantStatusString(_ status: EKParticipantStatus) -> String {
+    switch status {
+    case .accepted: return "accepted"
+    case .declined: return "declined"
+    case .tentative: return "tentative"
+    case .pending: return "pending"
+    case .delegated: return "delegated"
+    case .completed: return "completed"
+    case .inProcess: return "inProcess"
+    default: return "unknown"
+    }
+}
+
+private func participantRoleString(_ role: EKParticipantRole) -> String {
+    switch role {
+    case .required: return "required"
+    case .optional: return "optional"
+    case .chair: return "chair"
+    case .nonParticipant: return "nonParticipant"
+    default: return "unknown"
     }
 }
 
