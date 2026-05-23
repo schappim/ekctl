@@ -410,6 +410,143 @@ final class OutputFormatTests: XCTestCase {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Filter helper tests
+///
+/// These cover the `--search` and `--availability` filters on `list events`
+/// and `--search` on `list reminders`. The actual filtering inside
+/// `EventKitManager.listEvents` / `listReminders` runs against `EKEvent` /
+/// `EKReminder` objects backed by an `EKEventStore`, so we can't unit-test
+/// it directly. The filtering *logic* is therefore extracted into the pure
+/// static helpers `EventFilter.matchesSearch` and
+/// `EventFilter.matchesAvailability`, which are what these tests cover.
+final class EventFilterTests: XCTestCase {
+
+    // MARK: - matchesSearch
+
+    func testMatchesSearchReturnsTrueWhenNeedleIsNil() {
+        XCTAssertTrue(EventFilter.matchesSearch(nil, in: ["whatever"]))
+    }
+
+    func testMatchesSearchReturnsTrueWhenNeedleIsEmpty() {
+        // Empty string is treated as "no filter requested" — equivalent to nil.
+        XCTAssertTrue(EventFilter.matchesSearch("", in: ["whatever"]))
+    }
+
+    func testMatchesSearchMatchesInFirstField() {
+        XCTAssertTrue(EventFilter.matchesSearch("stand", in: ["Daily Standup", "Office", nil]))
+    }
+
+    func testMatchesSearchMatchesInMiddleField() {
+        XCTAssertTrue(EventFilter.matchesSearch("office", in: ["Coffee", "Office HQ", "notes"]))
+    }
+
+    func testMatchesSearchMatchesInLastField() {
+        XCTAssertTrue(EventFilter.matchesSearch("plan", in: ["Standup", nil, "remember to plan Q3"]))
+    }
+
+    func testMatchesSearchReturnsFalseWhenNoFieldMatches() {
+        XCTAssertFalse(EventFilter.matchesSearch("xyz", in: ["Daily Standup", "Office", "notes"]))
+    }
+
+    func testMatchesSearchIsCaseInsensitive() {
+        XCTAssertTrue(EventFilter.matchesSearch("STANDUP", in: ["daily standup", nil, nil]))
+        XCTAssertTrue(EventFilter.matchesSearch("standup", in: ["DAILY STANDUP", nil, nil]))
+        XCTAssertTrue(EventFilter.matchesSearch("StAnDuP", in: ["Daily Standup", nil, nil]))
+    }
+
+    func testMatchesSearchHandlesAllNilFieldsGracefully() {
+        XCTAssertFalse(EventFilter.matchesSearch("anything", in: [nil, nil, nil]))
+    }
+
+    func testMatchesSearchHandlesEmptyFieldList() {
+        XCTAssertFalse(EventFilter.matchesSearch("anything", in: []))
+    }
+
+    func testMatchesSearchMatchesSubstringNotJustWordBoundary() {
+        XCTAssertTrue(EventFilter.matchesSearch("anding", in: ["understanding", nil, nil]))
+    }
+
+    func testMatchesSearchAllowsArbitraryFieldCount() {
+        // Reminder path passes only [title, notes] — two fields. Event path
+        // passes [title, location, notes] — three. Helper must support both.
+        XCTAssertTrue(EventFilter.matchesSearch("milk", in: ["buy milk", nil]))
+        XCTAssertTrue(EventFilter.matchesSearch("milk", in: ["buy stuff", nil, "milk"]))
+    }
+
+    // MARK: - matchesAvailability
+
+    func testMatchesAvailabilityReturnsTrueWhenFilterIsNil() {
+        XCTAssertTrue(EventFilter.matchesAvailability(nil, eventAvailability: "busy"))
+        XCTAssertTrue(EventFilter.matchesAvailability(nil, eventAvailability: "free"))
+    }
+
+    func testMatchesAvailabilityMatchesEqualValues() {
+        XCTAssertTrue(EventFilter.matchesAvailability(.busy, eventAvailability: "busy"))
+        XCTAssertTrue(EventFilter.matchesAvailability(.free, eventAvailability: "free"))
+        XCTAssertTrue(EventFilter.matchesAvailability(.tentative, eventAvailability: "tentative"))
+        XCTAssertTrue(EventFilter.matchesAvailability(.unavailable, eventAvailability: "unavailable"))
+        XCTAssertTrue(EventFilter.matchesAvailability(.notSupported, eventAvailability: "notSupported"))
+    }
+
+    func testMatchesAvailabilityRejectsMismatch() {
+        XCTAssertFalse(EventFilter.matchesAvailability(.busy, eventAvailability: "free"))
+        XCTAssertFalse(EventFilter.matchesAvailability(.free, eventAvailability: "busy"))
+    }
+
+    func testMatchesAvailabilityIsCaseInsensitive() {
+        XCTAssertTrue(EventFilter.matchesAvailability(.busy, eventAvailability: "BUSY"))
+        XCTAssertTrue(EventFilter.matchesAvailability(.notSupported, eventAvailability: "notsupported"))
+    }
+
+    // MARK: - AvailabilityFilter enum
+
+    func testAvailabilityFilterRawValues() {
+        XCTAssertEqual(AvailabilityFilter.busy.rawValue, "busy")
+        XCTAssertEqual(AvailabilityFilter.free.rawValue, "free")
+        XCTAssertEqual(AvailabilityFilter.tentative.rawValue, "tentative")
+        XCTAssertEqual(AvailabilityFilter.unavailable.rawValue, "unavailable")
+        XCTAssertEqual(AvailabilityFilter.notSupported.rawValue, "notSupported")
+    }
+
+    func testAvailabilityFilterAllCases() {
+        XCTAssertEqual(
+            Set(AvailabilityFilter.allCases.map(\.rawValue)),
+            ["busy", "free", "tentative", "unavailable", "notSupported"]
+        )
+    }
+
+    func testAvailabilityFilterExpressibleByArgument() {
+        XCTAssertEqual(AvailabilityFilter(argument: "busy"), .busy)
+        XCTAssertEqual(AvailabilityFilter(argument: "free"), .free)
+        XCTAssertEqual(AvailabilityFilter(argument: "tentative"), .tentative)
+        XCTAssertEqual(AvailabilityFilter(argument: "unavailable"), .unavailable)
+        XCTAssertEqual(AvailabilityFilter(argument: "notSupported"), .notSupported)
+        XCTAssertNil(AvailabilityFilter(argument: "nonsense"))
+        // Case-sensitive at the ArgumentParser layer (the value must match the
+        // raw value exactly) — case-insensitivity is only applied inside
+        // matchesAvailability when comparing against an event's emitted string.
+        XCTAssertNil(AvailabilityFilter(argument: "BUSY"))
+    }
+
+    /// Raw values MUST match the strings emitted by EventKitManager's
+    /// availability switch (eventToDict / availabilityString). If these
+    /// drift, a `--availability busy` filter would silently skip every event
+    /// because the comparison wouldn't match. Locked down explicitly here so
+    /// any rename in EventKitManager.swift causes a test failure.
+    func testAvailabilityFilterRawValuesMatchEventKitManagerStringForm() {
+        // These are the literal strings that EventKitManager.availabilityString
+        // returns. Keep in sync.
+        let expected: [String] = ["busy", "free", "tentative", "unavailable", "notSupported"]
+        XCTAssertEqual(
+            AvailabilityFilter.allCases.map(\.rawValue),
+            expected,
+            "AvailabilityFilter cases must match the strings emitted by EventKitManager.availabilityString"
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 final class ConfigManagerTests: XCTestCase {
     // ConfigManager uses static methods writing to ~/.ekctl/config.json.
     // We back up and restore the real config around each test so we don't

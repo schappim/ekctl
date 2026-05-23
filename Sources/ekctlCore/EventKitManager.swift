@@ -204,7 +204,13 @@ public class EventKitManager {
     // MARK: - Event Operations
 
     /// Lists events in a calendar within a date range
-    public func listEvents(calendarIDs: [String], from startDate: Date, to endDate: Date) -> JSONOutput {
+    public func listEvents(
+        calendarIDs: [String],
+        from startDate: Date,
+        to endDate: Date,
+        search: String? = nil,
+        availability: AvailabilityFilter? = nil
+    ) -> JSONOutput {
         var calendars: [EKCalendar] = []
         for id in calendarIDs {
             guard let calendar = eventStore.calendar(withIdentifier: id) else {
@@ -220,7 +226,13 @@ public class EventKitManager {
         )
 
         let events = eventStore.events(matching: predicate)
-        let eventDicts = events.map { eventToDict($0) }
+        let filtered = events.filter { event in
+            EventFilter.matchesSearch(search, in: [event.title, event.location, event.notes])
+            && EventFilter.matchesAvailability(
+                availability,
+                eventAvailability: Self.availabilityString(event.availability))
+        }
+        let eventDicts = filtered.map { eventToDict($0) }
 
         return JSONOutput.success(["events": eventDicts, "count": eventDicts.count])
     }
@@ -228,6 +240,20 @@ public class EventKitManager {
     /// Convenience overload that accepts a single calendar ID.
     public func listEvents(calendarID: String, from startDate: Date, to endDate: Date) -> JSONOutput {
         return listEvents(calendarIDs: [calendarID], from: startDate, to: endDate)
+    }
+
+    /// Single source of truth for mapping EKEventAvailability to its public string
+    /// form. Used by both `eventToDict` (for output) and `listEvents` (for filtering
+    /// against `AvailabilityFilter`) so the two paths can't drift apart.
+    static func availabilityString(_ a: EKEventAvailability) -> String {
+        switch a {
+        case .busy: return "busy"
+        case .free: return "free"
+        case .tentative: return "tentative"
+        case .unavailable: return "unavailable"
+        case .notSupported: return "notSupported"
+        @unknown default: return "unknown"
+        }
     }
 
     /// Shows details of a specific event
@@ -493,7 +519,7 @@ public class EventKitManager {
     // MARK: - Reminder Operations
 
     /// Lists reminders in a reminder list
-    public func listReminders(listID: String, completed: Bool?) -> JSONOutput {
+    public func listReminders(listID: String, completed: Bool?, search: String? = nil) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: listID) else {
             return JSONOutput.error("Reminder list not found with ID: \(listID)")
         }
@@ -511,9 +537,11 @@ public class EventKitManager {
         }
         semaphore.wait()
 
-        // Filter by completion status if specified
         if let completed = completed {
             reminders = reminders.filter { $0.isCompleted == completed }
+        }
+        reminders = reminders.filter { reminder in
+            EventFilter.matchesSearch(search, in: [reminder.title, reminder.notes])
         }
 
         let reminderDicts = reminders.map { reminderToDict($0) }
@@ -744,14 +772,7 @@ public class EventKitManager {
         dict["hasAlarms"] = event.hasAlarms
         dict["hasRecurrenceRules"] = event.hasRecurrenceRules
 
-        switch event.availability {
-        case .busy: dict["availability"] = "busy"
-        case .free: dict["availability"] = "free"
-        case .tentative: dict["availability"] = "tentative"
-        case .unavailable: dict["availability"] = "unavailable"
-        case .notSupported: dict["availability"] = "notSupported"
-        @unknown default: dict["availability"] = "unknown"
-        }
+        dict["availability"] = Self.availabilityString(event.availability)
 
         if let attendees = event.attendees, !attendees.isEmpty {
             dict["attendees"] = attendees.map { participant -> [String: Any] in

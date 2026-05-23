@@ -6,6 +6,7 @@ Native macOS command-line tool for managing Calendar events and Reminders using 
 
 - List, create, update, and delete calendar events
 - List, create, update, complete, and delete reminders
+- Search and filter (`--search`, `--availability busy`) without piping through jq
 - Calendar aliases (use friendly names instead of UUIDs)
 - JSON, CSV, or plain-text output (`--format json|csv|text`)
 - Full EventKit integration with proper permission handling
@@ -158,6 +159,21 @@ To fetch events from multiple calendars in a single call, pass a comma-separated
 
 ```bash
 ekctl list events --calendar work,personal --from "2026-01-01T00:00:00Z" --to "2026-01-31T23:59:59Z"
+```
+
+**Filtering:**
+
+Narrow the result set further with `--search` (case-insensitive substring across title, location, and notes) and `--availability` (one of `busy`, `free`, `tentative`, `unavailable`, `notSupported`). Both filters compose with each other and with the calendar/date selection:
+
+```bash
+# Just the standup-related events
+ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --search standup
+
+# Only "busy" events — useful for finding actual blocked-out time
+ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --availability busy
+
+# Combine — standups marked busy
+ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --search standup --availability busy
 ```
 
 **Output:**
@@ -349,6 +365,12 @@ Only completed:
 
 ```bash
 ekctl list reminders --list personal --completed true
+```
+
+Substring filter on title and notes:
+
+```bash
+ekctl list reminders --list personal --search milk
 ```
 
 **Output:**

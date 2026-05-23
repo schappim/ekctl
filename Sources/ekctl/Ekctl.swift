@@ -64,6 +64,18 @@ struct ListEvents: ParsableCommand {
     @Option(name: .long, help: "End date in ISO8601 format (e.g., 2026-02-07T23:59:59Z).")
     var to: String
 
+    @Option(
+        name: .long,
+        help: "Case-insensitive substring filter applied across title, location, and notes."
+    )
+    var search: String?
+
+    @Option(
+        name: .long,
+        help: "Filter events by EventKit availability (busy, free, tentative, unavailable, notSupported)."
+    )
+    var availability: AvailabilityFilter?
+
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
@@ -90,7 +102,11 @@ struct ListEvents: ParsableCommand {
             .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
 
         let result = manager.listEvents(
-            calendarIDs: calendarIDs, from: startDate, to: endDate)
+            calendarIDs: calendarIDs,
+            from: startDate,
+            to: endDate,
+            search: search,
+            availability: availability)
         print(result.format(outputFormat.format))
     }
 }
@@ -107,13 +123,19 @@ struct ListReminders: ParsableCommand {
     @Option(name: .long, help: "Filter by completion status (true/false).")
     var completed: Bool?
 
+    @Option(
+        name: .long,
+        help: "Case-insensitive substring filter applied across title and notes."
+    )
+    var search: String?
+
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let listID = ConfigManager.resolveAlias(list)
-        let result = manager.listReminders(listID: listID, completed: completed)
+        let result = manager.listReminders(listID: listID, completed: completed, search: search)
         print(result.format(outputFormat.format))
     }
 }
