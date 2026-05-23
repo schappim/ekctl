@@ -35,11 +35,13 @@ struct ListCalendars: ParsableCommand {
         abstract: "List all calendars and reminder lists."
     )
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let result = manager.listCalendars()
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -62,6 +64,8 @@ struct ListEvents: ParsableCommand {
     @Option(name: .long, help: "End date in ISO8601 format (e.g., 2026-02-07T23:59:59Z).")
     var to: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
@@ -70,14 +74,14 @@ struct ListEvents: ParsableCommand {
             print(
                 JSONOutput.error(
                     "Invalid --from date format. Use ISO8601 (e.g., 2026-02-01T00:00:00Z)."
-                ).toJSON())
+                ).format(outputFormat.format))
             throw ExitCode.failure
         }
         guard let endDate = ISO8601DateFormatter().date(from: to) else {
             print(
                 JSONOutput.error(
                     "Invalid --to date format. Use ISO8601 (e.g., 2026-02-07T23:59:59Z)."
-                ).toJSON())
+                ).format(outputFormat.format))
             throw ExitCode.failure
         }
 
@@ -87,7 +91,7 @@ struct ListEvents: ParsableCommand {
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs, from: startDate, to: endDate)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -103,12 +107,14 @@ struct ListReminders: ParsableCommand {
     @Option(name: .long, help: "Filter by completion status (true/false).")
     var completed: Bool?
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let listID = ConfigManager.resolveAlias(list)
         let result = manager.listReminders(listID: listID, completed: completed)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -130,11 +136,13 @@ struct ShowEvent: ParsableCommand {
     @Argument(help: "The event ID to show.")
     var eventID: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let result = manager.showEvent(eventID: eventID)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -147,11 +155,13 @@ struct ShowReminder: ParsableCommand {
     @Argument(help: "The reminder ID to show.")
     var reminderID: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let result = manager.showReminder(reminderID: reminderID)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -243,16 +253,18 @@ struct AddEvent: ParsableCommand {
     @Option(name: .long, help: "Availability (busy, free, tentative, unavailable).")
     var availability: String?
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
 
         guard let startDate = ISO8601DateFormatter().date(from: start) else {
-            print(JSONOutput.error("Invalid --start date format. Use ISO8601.").toJSON())
+            print(JSONOutput.error("Invalid --start date format. Use ISO8601.").format(outputFormat.format))
             throw ExitCode.failure
         }
         guard let endDate = ISO8601DateFormatter().date(from: end) else {
-            print(JSONOutput.error("Invalid --end date format. Use ISO8601.").toJSON())
+            print(JSONOutput.error("Invalid --end date format. Use ISO8601.").format(outputFormat.format))
             throw ExitCode.failure
         }
 
@@ -260,7 +272,7 @@ struct AddEvent: ParsableCommand {
         if let recEndDateString = recurrenceEndDate, !recEndDateString.isEmpty {
             guard let date = ISO8601DateFormatter().date(from: recEndDateString) else {
                 print(
-                    JSONOutput.error("Invalid --recurrence-end-date format. Use ISO8601.").toJSON())
+                    JSONOutput.error("Invalid --recurrence-end-date format. Use ISO8601.").format(outputFormat.format))
                 throw ExitCode.failure
             }
             rEndDate = date
@@ -346,7 +358,7 @@ struct AddEvent: ParsableCommand {
             url: url,
             availability: availability
         )
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -371,6 +383,8 @@ struct AddReminder: ParsableCommand {
     @Option(name: .long, help: "Optional notes.")
     var notes: String?
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
@@ -378,7 +392,7 @@ struct AddReminder: ParsableCommand {
         var dueDate: Date?
         if let due = due {
             guard let parsed = ISO8601DateFormatter().date(from: due) else {
-                print(JSONOutput.error("Invalid --due date format. Use ISO8601.").toJSON())
+                print(JSONOutput.error("Invalid --due date format. Use ISO8601.").format(outputFormat.format))
                 throw ExitCode.failure
             }
             dueDate = parsed
@@ -393,7 +407,7 @@ struct AddReminder: ParsableCommand {
                 print(
                     JSONOutput.error(
                         "Invalid --priority value. Must be an integer (e.g., 0,1,5,9). Please use numeric priorities."
-                    ).toJSON())
+                    ).format(outputFormat.format))
                 throw ExitCode.failure
             }
         }
@@ -406,7 +420,7 @@ struct AddReminder: ParsableCommand {
             priority: priorityInt,
             notes: notes
         )
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -458,6 +472,8 @@ struct UpdateEvent: ParsableCommand {
     @Option(name: .long, help: "Alarms relative to start (minutes). Replaces existing alarms.")
     var alarms: String?
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
@@ -465,7 +481,7 @@ struct UpdateEvent: ParsableCommand {
         var startDate: Date?
         if let start = start {
             guard let da = ISO8601DateFormatter().date(from: start) else {
-                print(JSONOutput.error("Invalid --start date format. Use ISO8601.").toJSON())
+                print(JSONOutput.error("Invalid --start date format. Use ISO8601.").format(outputFormat.format))
                 throw ExitCode.failure
             }
             startDate = da
@@ -473,7 +489,7 @@ struct UpdateEvent: ParsableCommand {
         var endDate: Date?
         if let end = end {
             guard let da = ISO8601DateFormatter().date(from: end) else {
-                print(JSONOutput.error("Invalid --end date format. Use ISO8601.").toJSON())
+                print(JSONOutput.error("Invalid --end date format. Use ISO8601.").format(outputFormat.format))
                 throw ExitCode.failure
             }
             endDate = da
@@ -516,7 +532,7 @@ struct UpdateEvent: ParsableCommand {
             travelTime: travelTimeSeconds,
             alarms: alarmsList
         )
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -544,6 +560,8 @@ struct UpdateReminder: ParsableCommand {
     @Option(name: .long, help: "Mark as completed (true/false).")
     var completed: Bool?
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
@@ -551,7 +569,7 @@ struct UpdateReminder: ParsableCommand {
         var dueDate: Date?
         if let due = due {
             guard let parsed = ISO8601DateFormatter().date(from: due) else {
-                print(JSONOutput.error("Invalid --due date format. Use ISO8601.").toJSON())
+                print(JSONOutput.error("Invalid --due date format. Use ISO8601.").format(outputFormat.format))
                 throw ExitCode.failure
             }
             dueDate = parsed
@@ -563,7 +581,7 @@ struct UpdateReminder: ParsableCommand {
                 print(
                     JSONOutput.error(
                         "Invalid --priority value. Must be an integer (0, 1, 5, or 9)."
-                    ).toJSON())
+                    ).format(outputFormat.format))
                 throw ExitCode.failure
             }
             priorityInt = p
@@ -577,7 +595,7 @@ struct UpdateReminder: ParsableCommand {
             notes: notes,
             completed: completed
         )
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -603,11 +621,13 @@ struct CreateCalendar: ParsableCommand {
     @Option(name: .long, help: "Color hex code (e.g. #FF0000).")
     var color: String?
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let result = manager.createCalendar(title: title, color: color)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -626,12 +646,14 @@ struct UpdateCalendar: ParsableCommand {
     @Option(name: .long, help: "New color hex code.")
     var color: String?
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let resolvedID = ConfigManager.resolveAlias(calendarID)
         let result = manager.updateCalendar(calendarID: resolvedID, title: title, color: color)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -644,13 +666,15 @@ struct DeleteCalendar: ParsableCommand {
     @Argument(help: "Calendar ID to delete.")
     var calendarID: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         // Resolve alias if needed
         let resolvedID = ConfigManager.resolveAlias(calendarID)
         let result = manager.deleteCalendar(calendarID: resolvedID)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -672,11 +696,13 @@ struct DeleteEvent: ParsableCommand {
     @Argument(help: "The event ID to delete.")
     var eventID: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let result = manager.deleteEvent(eventID: eventID)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -689,11 +715,13 @@ struct DeleteReminder: ParsableCommand {
     @Argument(help: "The reminder ID to delete.")
     var reminderID: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let result = manager.deleteReminder(reminderID: reminderID)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -715,11 +743,13 @@ struct CompleteReminder: ParsableCommand {
     @Argument(help: "The reminder ID to complete.")
     var reminderID: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         let manager = EventKitManager()
         try manager.requestAccess()
         let result = manager.completeReminder(reminderID: reminderID)
-        print(result.toJSON())
+        print(result.format(outputFormat.format))
     }
 }
 
@@ -744,6 +774,8 @@ struct AliasSet: ParsableCommand {
     @Argument(help: "The calendar or reminder list ID.")
     var id: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         do {
             try ConfigManager.setAlias(name: name, id: id)
@@ -755,9 +787,9 @@ struct AliasSet: ParsableCommand {
                         "name": name,
                         "id": id,
                     ],
-                ]).toJSON())
+                ]).format(outputFormat.format))
         } catch {
-            print(JSONOutput.error("Failed to save alias: \(error.localizedDescription)").toJSON())
+            print(JSONOutput.error("Failed to save alias: \(error.localizedDescription)").format(outputFormat.format))
             throw ExitCode.failure
         }
     }
@@ -772,6 +804,8 @@ struct AliasRemove: ParsableCommand {
     @Argument(help: "The alias name to remove.")
     var name: String
 
+    @OptionGroup var outputFormat: OutputFormatOptions
+
     func run() throws {
         do {
             let removed = try ConfigManager.removeAlias(name: name)
@@ -780,14 +814,14 @@ struct AliasRemove: ParsableCommand {
                     JSONOutput.success([
                         "status": "success",
                         "message": "Alias '\(name)' removed successfully",
-                    ]).toJSON())
+                    ]).format(outputFormat.format))
             } else {
-                print(JSONOutput.error("Alias '\(name)' not found").toJSON())
+                print(JSONOutput.error("Alias '\(name)' not found").format(outputFormat.format))
                 throw ExitCode.failure
             }
         } catch let error where !(error is ExitCode) {
             print(
-                JSONOutput.error("Failed to remove alias: \(error.localizedDescription)").toJSON())
+                JSONOutput.error("Failed to remove alias: \(error.localizedDescription)").format(outputFormat.format))
             throw ExitCode.failure
         }
     }
@@ -798,6 +832,8 @@ struct AliasList: ParsableCommand {
         commandName: "list",
         abstract: "List all configured aliases."
     )
+
+    @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
         let aliases = ConfigManager.getAliases()
@@ -812,6 +848,6 @@ struct AliasList: ParsableCommand {
                 "aliases": aliasList,
                 "count": aliasList.count,
                 "configPath": ConfigManager.configPath(),
-            ]).toJSON())
+            ]).format(outputFormat.format))
     }
 }

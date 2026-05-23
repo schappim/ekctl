@@ -81,6 +81,335 @@ final class JSONOutputTests: XCTestCase {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Output format tests
+///
+/// These cover the `--format json|csv|text` flag. The defining property the
+/// formatters MUST preserve is *drift resistance*: any new field added to a
+/// dict produced by `eventToDict`, `reminderToDict`, etc. has to flow through
+/// CSV and text output without changes to the formatter, otherwise CSV/text
+/// will silently lag JSON as the project grows. Multiple tests below assert
+/// this property explicitly.
+final class OutputFormatTests: XCTestCase {
+
+    // MARK: - Format dispatch
+
+    func testFormatDotJSONMatchesToJSON() {
+        let output = JSONOutput.success(["count": 1])
+        XCTAssertEqual(output.format(.json), output.toJSON())
+    }
+
+    func testFormatDotCSVReturnsCSV() {
+        let output = JSONOutput.success([
+            "events": [["id": "1", "title": "Foo"]]
+        ])
+        let csv = output.format(.csv)
+        XCTAssertTrue(csv.contains("id,title"))
+        XCTAssertTrue(csv.contains("1,Foo"))
+    }
+
+    func testFormatDotTextReturnsText() {
+        let output = JSONOutput.success([
+            "events": [["id": "1", "title": "Foo"]]
+        ])
+        let text = output.format(.text)
+        XCTAssertTrue(text.contains("id: 1"))
+        XCTAssertTrue(text.contains("title: Foo"))
+    }
+
+    // MARK: - CSV: primary row detection
+
+    func testCSVUsesEventsListAsRows() {
+        let events: [[String: Any]] = [
+            ["id": "a", "title": "x"],
+            ["id": "b", "title": "y"],
+        ]
+        let output = JSONOutput.success(["events": events, "count": 2])
+        let lines = output.format(.csv).components(separatedBy: "\r\n")
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[0], "id,title")
+        XCTAssertEqual(lines[1], "a,x")
+        XCTAssertEqual(lines[2], "b,y")
+    }
+
+    func testCSVUsesRemindersListWhenPresent() {
+        let reminders: [[String: Any]] = [["id": "r1", "title": "buy milk"]]
+        let output = JSONOutput.success(["reminders": reminders, "count": 1])
+        XCTAssertTrue(output.format(.csv).contains("buy milk"))
+    }
+
+    func testCSVUsesCalendarsListWhenPresent() {
+        let calendars: [[String: Any]] = [["id": "c1", "title": "Work"]]
+        let output = JSONOutput.success(["calendars": calendars])
+        XCTAssertTrue(output.format(.csv).contains("Work"))
+    }
+
+    func testCSVUsesAliasesListWhenPresent() {
+        let aliases: [[String: String]] = [["name": "work", "id": "abc"]]
+        let output = JSONOutput.success(["aliases": aliases, "count": 1])
+        XCTAssertTrue(output.format(.csv).contains("name"))
+        XCTAssertTrue(output.format(.csv).contains("work"))
+    }
+
+    func testCSVWrapsSingleEventInOneRow() {
+        let output = JSONOutput.success([
+            "event": ["id": "1", "title": "Foo"]
+        ])
+        let lines = output.format(.csv).components(separatedBy: "\r\n")
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertEqual(lines[0], "id,title")
+        XCTAssertEqual(lines[1], "1,Foo")
+    }
+
+    // MARK: - CSV: flattening
+
+    func testCSVFlattensNestedObjectsWithDotNotation() {
+        let events: [[String: Any]] = [[
+            "id": "1",
+            "calendar": ["id": "cal-1", "title": "Work"]
+        ]]
+        let output = JSONOutput.success(["events": events])
+        let csv = output.format(.csv)
+        XCTAssertTrue(csv.contains("calendar.id"))
+        XCTAssertTrue(csv.contains("calendar.title"))
+        XCTAssertTrue(csv.contains("cal-1"))
+        XCTAssertTrue(csv.contains("Work"))
+    }
+
+    func testCSVFlattensDeeplyNestedObjects() {
+        let events: [[String: Any]] = [[
+            "a": ["b": ["c": "deep"]]
+        ]]
+        let output = JSONOutput.success(["events": events])
+        let csv = output.format(.csv)
+        XCTAssertTrue(csv.contains("a.b.c"))
+        XCTAssertTrue(csv.contains("deep"))
+    }
+
+    func testCSVJSONEncodesNestedArrayIntoSingleCell() {
+        let events: [[String: Any]] = [[
+            "id": "1",
+            "attendees": [["name": "Jane", "email": "jane@x.com"]]
+        ]]
+        let output = JSONOutput.success(["events": events])
+        let csv = output.format(.csv)
+        // The whole attendees array should be JSON-encoded into one cell.
+        // The cell will get quoted because the JSON contains commas, so the
+        // result contains "[{...}]" wrapped in CSV quotes with `"` doubled.
+        XCTAssertTrue(csv.contains("Jane"))
+        XCTAssertTrue(csv.contains("jane@x.com"))
+        XCTAssertTrue(csv.contains("\"\""), "expected doubled quotes from CSV escaping of JSON")
+    }
+
+    // MARK: - CSV: RFC 4180 escaping
+
+    func testCSVEscapesFieldsContainingComma() {
+        let events: [[String: Any]] = [["title": "Hello, World"]]
+        let output = JSONOutput.success(["events": events])
+        XCTAssertTrue(output.format(.csv).contains("\"Hello, World\""))
+    }
+
+    func testCSVEscapesFieldsContainingDoubleQuote() {
+        let events: [[String: Any]] = [["title": "She said \"hi\""]]
+        let output = JSONOutput.success(["events": events])
+        // Internal " is doubled, whole field is wrapped in quotes:
+        XCTAssertTrue(output.format(.csv).contains("\"She said \"\"hi\"\"\""))
+    }
+
+    func testCSVEscapesFieldsContainingNewline() {
+        let events: [[String: Any]] = [["notes": "line one\nline two"]]
+        let output = JSONOutput.success(["events": events])
+        XCTAssertTrue(output.format(.csv).contains("\"line one\nline two\""))
+    }
+
+    func testCSVDoesNotEscapePlainField() {
+        let events: [[String: Any]] = [["title": "plain", "id": "1"]]
+        let output = JSONOutput.success(["events": events])
+        let csv = output.format(.csv)
+        // Plain field "plain" must appear bare, without surrounding quotes.
+        XCTAssertTrue(csv.contains("1,plain"))
+        XCTAssertFalse(csv.contains("\"plain\""))
+    }
+
+    func testCSVUsesCRLFLineEndings() {
+        let events: [[String: Any]] = [["id": "1"], ["id": "2"]]
+        let output = JSONOutput.success(["events": events])
+        let csv = output.format(.csv)
+        // Header row → CRLF → row 1 → CRLF → row 2
+        XCTAssertTrue(csv.contains("\r\n"))
+    }
+
+    // MARK: - CSV: union of keys + missing fields
+
+    func testCSVHeaderIsUnionOfKeysAlphabetised() {
+        let events: [[String: Any]] = [
+            ["id": "1", "title": "A"],
+            ["id": "2", "title": "B", "extra": "value"],
+        ]
+        let output = JSONOutput.success(["events": events])
+        let lines = output.format(.csv).components(separatedBy: "\r\n")
+        XCTAssertEqual(lines[0], "extra,id,title")
+        XCTAssertEqual(lines[1], ",1,A")        // first row missing `extra`
+        XCTAssertEqual(lines[2], "value,2,B")   // second row has it
+    }
+
+    // MARK: - CSV: empty + error cases
+
+    func testCSVEmptyEventsListProducesEmptyString() {
+        let empty: [[String: Any]] = []
+        let output = JSONOutput.success(["events": empty])
+        XCTAssertEqual(output.format(.csv), "")
+    }
+
+    func testCSVErrorResponseProducesSingleRow() {
+        let output = JSONOutput.error("Calendar not found")
+        let csv = output.format(.csv)
+        let lines = csv.components(separatedBy: "\r\n")
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertEqual(lines[0], "error,status")
+        XCTAssertEqual(lines[1], "Calendar not found,error")
+    }
+
+    // MARK: - CSV: value coercion
+
+    func testCSVRendersNSNullAsEmpty() {
+        let events: [[String: Any]] = [["id": "1", "location": NSNull()]]
+        let output = JSONOutput.success(["events": events])
+        let lines = output.format(.csv).components(separatedBy: "\r\n")
+        XCTAssertEqual(lines[0], "id,location")
+        XCTAssertEqual(lines[1], "1,")
+    }
+
+    func testCSVRendersBoolAsTrueFalse() {
+        let events: [[String: Any]] = [["id": "1", "allDay": true]]
+        let output = JSONOutput.success(["events": events])
+        let lines = output.format(.csv).components(separatedBy: "\r\n")
+        XCTAssertTrue(lines[1].contains("true"))
+        XCTAssertFalse(lines[1].contains("1,true,1"), "Bool must not render as '1'")
+    }
+
+    func testCSVRendersIntegerWithoutDecimal() {
+        let events: [[String: Any]] = [["id": "1", "priority": 5]]
+        let output = JSONOutput.success(["events": events])
+        let lines = output.format(.csv).components(separatedBy: "\r\n")
+        XCTAssertTrue(lines[1].contains("5"))
+        XCTAssertFalse(lines[1].contains("5.0"), "Integer must not render with .0")
+    }
+
+    // MARK: - CSV: drift resistance (the headline property)
+
+    /// If someone adds a brand-new field to `eventToDict` tomorrow, this test's
+    /// equivalent — same data shape, just with the new key inserted — should
+    /// continue to pass without changes to the formatter. That's the whole
+    /// point of auto-discovery: CSV cannot lag JSON.
+    func testCSVPicksUpArbitraryNewFieldsWithoutCodeChanges() {
+        let events: [[String: Any]] = [[
+            "id": "1",
+            "title": "Foo",
+            "someFieldAddedInTheFuture": "shows up automatically",
+        ]]
+        let output = JSONOutput.success(["events": events])
+        let csv = output.format(.csv)
+        XCTAssertTrue(csv.contains("someFieldAddedInTheFuture"))
+        XCTAssertTrue(csv.contains("shows up automatically"))
+    }
+
+    /// Explicit regression guard for the two fields the maintainer specifically
+    /// worried about (`availability` from issue #2 and `attendees` from PR #6).
+    /// Both must round-trip through CSV without any per-field code.
+    func testCSVIncludesAvailabilityAndAttendeesAutomatically() {
+        let events: [[String: Any]] = [[
+            "id": "1",
+            "title": "Meeting",
+            "availability": "busy",
+            "attendees": [["name": "Jane", "email": "jane@x.com"]],
+        ]]
+        let output = JSONOutput.success(["events": events])
+        let csv = output.format(.csv)
+        XCTAssertTrue(csv.contains("availability"), "availability must appear in CSV header")
+        XCTAssertTrue(csv.contains("busy"))
+        XCTAssertTrue(csv.contains("attendees"), "attendees must appear in CSV header")
+        XCTAssertTrue(csv.contains("Jane"))
+    }
+
+    // MARK: - Text format
+
+    func testTextRendersKeyColonValueLines() {
+        let events: [[String: Any]] = [["id": "1", "title": "Foo"]]
+        let output = JSONOutput.success(["events": events])
+        let text = output.format(.text)
+        XCTAssertTrue(text.contains("id: 1"))
+        XCTAssertTrue(text.contains("title: Foo"))
+    }
+
+    func testTextKeysAreSorted() {
+        let events: [[String: Any]] = [["zzz": "1", "aaa": "2"]]
+        let output = JSONOutput.success(["events": events])
+        let text = output.format(.text)
+        let aaaIndex = text.range(of: "aaa:")!.lowerBound
+        let zzzIndex = text.range(of: "zzz:")!.lowerBound
+        XCTAssertLessThan(aaaIndex, zzzIndex)
+    }
+
+    func testTextSeparatesItemsWithBlankLine() {
+        let events: [[String: Any]] = [["id": "1"], ["id": "2"]]
+        let output = JSONOutput.success(["events": events])
+        let text = output.format(.text)
+        XCTAssertTrue(text.contains("id: 1\n\nid: 2"))
+    }
+
+    func testTextFlattensNestedObjects() {
+        let events: [[String: Any]] = [[
+            "calendar": ["title": "Work"]
+        ]]
+        let output = JSONOutput.success(["events": events])
+        XCTAssertTrue(output.format(.text).contains("calendar.title: Work"))
+    }
+
+    func testTextRendersErrorResponse() {
+        let output = JSONOutput.error("Calendar not found")
+        let text = output.format(.text)
+        XCTAssertTrue(text.contains("error: Calendar not found"))
+        XCTAssertTrue(text.contains("status: error"))
+    }
+
+    func testTextEmptyListProducesEmpty() {
+        let empty: [[String: Any]] = []
+        let output = JSONOutput.success(["events": empty])
+        XCTAssertEqual(output.format(.text), "")
+    }
+
+    func testTextPicksUpNewFieldsWithoutCodeChanges() {
+        let events: [[String: Any]] = [[
+            "id": "1",
+            "shinyNewField": "automatic",
+        ]]
+        let output = JSONOutput.success(["events": events])
+        XCTAssertTrue(output.format(.text).contains("shinyNewField: automatic"))
+    }
+
+    // MARK: - OutputFormat enum
+
+    func testOutputFormatRawValues() {
+        XCTAssertEqual(OutputFormat.json.rawValue, "json")
+        XCTAssertEqual(OutputFormat.csv.rawValue, "csv")
+        XCTAssertEqual(OutputFormat.text.rawValue, "text")
+    }
+
+    func testOutputFormatAllCases() {
+        XCTAssertEqual(Set(OutputFormat.allCases.map(\.rawValue)),
+                       ["json", "csv", "text"])
+    }
+
+    func testOutputFormatExpressibleByArgument() {
+        XCTAssertEqual(OutputFormat(argument: "json"), .json)
+        XCTAssertEqual(OutputFormat(argument: "csv"), .csv)
+        XCTAssertEqual(OutputFormat(argument: "text"), .text)
+        XCTAssertNil(OutputFormat(argument: "yaml"))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 final class ConfigManagerTests: XCTestCase {
     // ConfigManager uses static methods writing to ~/.ekctl/config.json.
     // We back up and restore the real config around each test so we don't

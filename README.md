@@ -1,13 +1,13 @@
 # ekctl
 
-Native macOS command-line tool for managing Calendar events and Reminders using EventKit. All output is JSON for scripting and automation.
+Native macOS command-line tool for managing Calendar events and Reminders using EventKit. Output is JSON by default, with `--format csv` and `--format text` available on every command for spreadsheets and quick eyeballing.
 
 ## Features
 
 - List, create, update, and delete calendar events
 - List, create, update, complete, and delete reminders
 - Calendar aliases (use friendly names instead of UUIDs)
-- JSON output for parsing
+- JSON, CSV, or plain-text output (`--format json|csv|text`)
 - Full EventKit integration with proper permission handling
 - Support for iCloud, Exchange, and local calendars
 
@@ -555,12 +555,25 @@ ekctl list reminders --list "$LIST_ID" --completed false | jq '.count'
 
 ### Export events to CSV
 
+Use the built-in `--format csv` flag — no jq pipeline required. The CSV header is the union of every field across the returned events, so new fields like `availability` and `attendees` are picked up automatically as they're added:
+
 ```bash
 ekctl list events \
   --calendar "$CALENDAR_ID" \
   --from "2026-01-01T00:00:00Z" \
   --to "2026-12-31T23:59:59Z" \
-  | jq -r '.events[] | [.title, .startDate, .endDate, .location // ""] | @csv'
+  --format csv \
+  > events.csv
+```
+
+Nested objects flatten to dot-notated columns (e.g., `calendar.id`, `calendar.title`), and nested arrays (like `attendees`) become a single JSON-encoded cell.
+
+### Human-readable plain text
+
+`--format text` emits one `key: value` line per field, with a blank line between items — handy for `grep`, eyeballing, or quick `head`/`tail` checks:
+
+```bash
+ekctl list events --calendar work --from "$TODAY" --to "$TOMORROW" --format text
 ```
 
 ## Error Handling
