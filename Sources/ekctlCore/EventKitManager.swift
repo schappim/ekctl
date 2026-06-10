@@ -25,8 +25,13 @@ import Foundation
 /// 5. Users can manage permissions in: System Settings > Privacy & Security > Calendars/Reminders
 
 public class EventKitManager {
-    public init() {}
+    /// `timeFormat` controls how `eventToDict`/`reminderToDict` render
+    /// timestamps — see `TimeFormat` (issue #3).
+    public init(timeFormat: TimeFormat = .rfc3339) {
+        self.timeFormat = timeFormat
+    }
 
+    private let timeFormat: TimeFormat
     private let eventStore = EKEventStore()
     private var calendarAccessGranted = false
     private var reminderAccessGranted = false
@@ -737,7 +742,7 @@ public class EventKitManager {
         // times silently render as 12-hour without an AM/PM marker on locales like en_GB
         // — e.g. 16:00 becomes "4:00" (see issue #8).
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"  // ISO 8601 with timezone offset
+        formatter.dateFormat = timeFormat.dateFormatPattern  // ISO 8601 with timezone offset
         formatter.timeZone = TimeZone.current
         return formatter
     }

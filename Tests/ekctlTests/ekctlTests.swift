@@ -1130,6 +1130,56 @@ final class UpdateReminderLogicTests: XCTestCase {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Tests for `TimeFormat` — the `--time-format` flag's rendering patterns
+/// (issue #3). `rfc3339` must stay byte-identical to the historical output;
+/// `compact` must always produce a numeric offset jq's `%z` can parse.
+final class TimeFormatTests: XCTestCase {
+
+    /// 2026-01-01T00:00:00Z rendered through `timeFormat` in `zone` — mirrors
+    /// `localDateFormatter()` exactly (POSIX locale + pattern).
+    private func render(_ timeFormat: TimeFormat, zone: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = timeFormat.dateFormatPattern
+        formatter.timeZone = TimeZone(identifier: zone)
+        return formatter.string(from: Date(timeIntervalSince1970: 1_767_225_600))
+    }
+
+    func testRFC3339RendersColonSeparatedOffset() {
+        XCTAssertEqual(render(.rfc3339, zone: "Australia/Sydney"), "2026-01-01T11:00:00+11:00")
+    }
+
+    func testCompactRendersOffsetWithoutColon() {
+        XCTAssertEqual(render(.compact, zone: "Australia/Sydney"), "2026-01-01T11:00:00+1100")
+    }
+
+    func testUTCRendering() {
+        // rfc3339 keeps the historical `Z`; compact must render `+0000`
+        // because a literal `Z` is exactly what breaks jq's `%z`.
+        XCTAssertEqual(render(.rfc3339, zone: "UTC"), "2026-01-01T00:00:00Z")
+        XCTAssertEqual(render(.compact, zone: "UTC"), "2026-01-01T00:00:00+0000")
+    }
+
+    func testDefaultIsRFC3339() {
+        // The flag default — changing this silently changes every consumer's
+        // output, so pin it.
+        XCTAssertEqual(OutputFormatOptions().timeFormat, .rfc3339)
+    }
+
+    func testEveryTimeFormatRoundTripsThroughDateParsing() {
+        for timeFormat in TimeFormat.allCases {
+            for zone in ["UTC", "Australia/Sydney", "America/New_York"] {
+                let emitted = render(timeFormat, zone: zone)
+                XCTAssertNotNil(
+                    DateParsing.parse(emitted),
+                    "\(timeFormat.rawValue) output \(emitted) must be valid ekctl input")
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// Tests for `DateParsing.parse` — the shared parser behind every date-taking
 /// flag. The defining property (issue #3): anything ekctl can emit must parse
 /// back in, in both the colon (`+11:00`) and compact (`+1100`) offset forms.

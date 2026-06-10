@@ -71,6 +71,31 @@ public enum OutputFormat: String, CaseIterable, ExpressibleByArgument {
     public static var allValueStrings: [String] { Self.allCases.map(\.rawValue) }
 }
 
+// MARK: - TimeFormat
+
+/// How timestamps are rendered in output (issue #3). The default stays
+/// RFC 3339 so existing consumers are untouched; `compact` is the opt-in
+/// jq-friendly form, since jq's `strptime` can parse `%z` (`+1100`) but not
+/// the colon-separated `%:z` (`+11:00`).
+public enum TimeFormat: String, CaseIterable, ExpressibleByArgument {
+    /// Colon-separated offset, `Z` for UTC: `2026-03-09T16:00:00+11:00`.
+    case rfc3339
+    /// Compact offset, never `Z`: `2026-03-09T16:00:00+1100`. UTC renders as
+    /// `+0000` so the offset is always numeric for `%z` parsers.
+    case compact
+
+    public static var allValueStrings: [String] { Self.allCases.map(\.rawValue) }
+
+    /// `DateFormatter` pattern rendering this form. `XXXXX` emits colon
+    /// offsets and `Z`; lowercase `xxxx` emits compact offsets and `+0000`.
+    public var dateFormatPattern: String {
+        switch self {
+        case .rfc3339: return "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+        case .compact: return "yyyy-MM-dd'T'HH:mm:ssxxxx"
+        }
+    }
+}
+
 /// Shared options for commands that emit output. Add via `@OptionGroup`.
 public struct OutputFormatOptions: ParsableArguments {
     @Option(
@@ -78,6 +103,12 @@ public struct OutputFormatOptions: ParsableArguments {
         help: "Output format: json (default), csv, or text. CSV and text auto-discover fields from the JSON dictionary, so new fields appear without code changes."
     )
     public var format: OutputFormat = .json
+
+    @Option(
+        name: .long,
+        help: "Timestamp rendering: rfc3339 (default, +11:00 offsets) or compact (+1100 offsets, parseable by jq strptime's %z)."
+    )
+    public var timeFormat: TimeFormat = .rfc3339
 
     public init() {}
 }
