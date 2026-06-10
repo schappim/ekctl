@@ -81,6 +81,15 @@ public struct ConfigManager {
         return config.aliases[nameOrID] ?? nameOrID
     }
 
+    /// Splits a comma-separated calendar list ("work, personal") and resolves
+    /// each entry through the alias table. Backs every multi-calendar
+    /// `--calendar` flag.
+    public static func resolveCalendarIDs(_ list: String) -> [String] {
+        return list
+            .split(separator: ",")
+            .map { resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+    }
+
     /// Gets the config file path (for display purposes)
     public static func configPath() -> String {
         return configFile.path

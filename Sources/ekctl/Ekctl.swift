@@ -102,9 +102,7 @@ struct ListEvents: ParsableCommand {
         let startDate = try parseDateOption(from, flag: "--from", format: outputFormat.format)
         let endDate = try parseDateOption(to, flag: "--to", format: outputFormat.format)
 
-        let calendarIDs = calendar
-            .split(separator: ",")
-            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
@@ -858,9 +856,7 @@ struct Today: ParsableCommand {
         try manager.requestAccess()
 
         let (start, end) = DateRanges.today()
-        let calendarIDs = calendar
-            .split(separator: ",")
-            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
@@ -903,9 +899,7 @@ struct Tomorrow: ParsableCommand {
         try manager.requestAccess()
 
         let (start, end) = DateRanges.tomorrow()
-        let calendarIDs = calendar
-            .split(separator: ",")
-            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
@@ -969,9 +963,7 @@ struct Next: ParsableCommand {
         }
 
         let (start, end) = DateRanges.nextWindow(days: days)
-        let calendarIDs = calendar
-            .split(separator: ",")
-            .map { ConfigManager.resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
