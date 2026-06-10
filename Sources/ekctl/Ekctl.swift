@@ -276,7 +276,7 @@ struct AddEvent: ParsableCommand {
     var url: String?
 
     @Option(name: .long, help: "Availability (busy, free, tentative, unavailable).")
-    var availability: String?
+    var availability: AvailabilitySetting?
 
     @OptionGroup var outputFormat: OutputFormatOptions
 
@@ -458,7 +458,7 @@ struct UpdateEvent: ParsableCommand {
     var url: String?
 
     @Option(name: .long, help: "New availability (busy, free, tentative, unavailable).")
-    var availability: String?
+    var availability: AvailabilitySetting?
 
     @Option(name: .long, help: "Travel time in minutes.")
     var travelTime: String?

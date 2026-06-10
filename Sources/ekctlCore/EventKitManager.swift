@@ -287,7 +287,7 @@ public class EventKitManager {
         notes: String?,
         allDay: Bool?,
         url: String?,
-        availability: String?,
+        availability: AvailabilitySetting?,
         travelTime: TimeInterval?,
         alarms: [Double]?
     ) -> JSONOutput {
@@ -311,14 +311,8 @@ public class EventKitManager {
             event.url = urlObj
         }
 
-        if let avail = availability?.lowercased() {
-            switch avail {
-            case "busy": event.availability = .busy
-            case "free": event.availability = .free
-            case "tentative": event.availability = .tentative
-            case "unavailable": event.availability = .unavailable
-            default: break
-            }
+        if let availability = availability {
+            event.availability = availability.ekAvailability
         }
 
         if let travelTime = travelTime {
@@ -371,7 +365,7 @@ public class EventKitManager {
         travelTime: TimeInterval? = nil,
         alarms: [Double]? = nil,
         url: String? = nil,
-        availability: String? = nil
+        availability: AvailabilitySetting? = nil
     ) -> JSONOutput {
         guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
             return JSONOutput.error("Calendar not found with ID: \(calendarID)")
@@ -394,14 +388,8 @@ public class EventKitManager {
             event.url = urlObj
         }
 
-        if let avail = availability?.lowercased() {
-            switch avail {
-            case "busy": event.availability = .busy
-            case "free": event.availability = .free
-            case "tentative": event.availability = .tentative
-            case "unavailable": event.availability = .unavailable
-            default: break
-            }
+        if let availability = availability {
+            event.availability = availability.ekAvailability
         }
 
         if let alarms = alarms {
@@ -845,6 +833,21 @@ public class EventKitManager {
         }
 
         return dict
+    }
+}
+
+// MARK: - AvailabilitySetting → EventKit
+
+extension AvailabilitySetting {
+    /// The EKEventAvailability value this CLI setting assigns. Lives here
+    /// (not Filters.swift) so the CLI-string enum stays EventKit-free.
+    public var ekAvailability: EKEventAvailability {
+        switch self {
+        case .busy: return .busy
+        case .free: return .free
+        case .tentative: return .tentative
+        case .unavailable: return .unavailable
+        }
     }
 }
 

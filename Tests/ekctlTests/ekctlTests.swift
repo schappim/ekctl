@@ -1,4 +1,5 @@
 import ArgumentParser
+import EventKit
 import XCTest
 import ekctlCore
 import Foundation
@@ -1119,6 +1120,42 @@ final class UpdateReminderLogicTests: XCTestCase {
         XCTAssertEqual(title,    "New title")
         XCTAssertEqual(priority, 0)
         XCTAssertEqual(notes,    "Original notes")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Tests for `AvailabilitySetting` — the `--availability` value on
+/// `add event` / `update event`. Previously a raw String that was silently
+/// ignored when misspelled; now ArgumentParser rejects unknown values.
+final class AvailabilitySettingTests: XCTestCase {
+
+    func testParsesAllKnownValues() {
+        XCTAssertEqual(AvailabilitySetting(argument: "busy"), .busy)
+        XCTAssertEqual(AvailabilitySetting(argument: "free"), .free)
+        XCTAssertEqual(AvailabilitySetting(argument: "tentative"), .tentative)
+        XCTAssertEqual(AvailabilitySetting(argument: "unavailable"), .unavailable)
+    }
+
+    func testParsingIsCaseInsensitive() {
+        // The old string-based flag lowercased input; keep that leniency.
+        XCTAssertEqual(AvailabilitySetting(argument: "BUSY"), .busy)
+        XCTAssertEqual(AvailabilitySetting(argument: "Tentative"), .tentative)
+    }
+
+    func testRejectsUnknownValues() {
+        XCTAssertNil(AvailabilitySetting(argument: "bsy"))
+        XCTAssertNil(AvailabilitySetting(argument: ""))
+        // Filterable but not settable — EventKit reports notSupported, you
+        // can't assign it.
+        XCTAssertNil(AvailabilitySetting(argument: "notSupported"))
+    }
+
+    func testEventKitMapping() {
+        XCTAssertEqual(AvailabilitySetting.busy.ekAvailability, .busy)
+        XCTAssertEqual(AvailabilitySetting.free.ekAvailability, .free)
+        XCTAssertEqual(AvailabilitySetting.tentative.ekAvailability, .tentative)
+        XCTAssertEqual(AvailabilitySetting.unavailable.ekAvailability, .unavailable)
     }
 }
 

@@ -12,6 +12,22 @@ public enum AvailabilityFilter: String, CaseIterable, ExpressibleByArgument {
     }
 }
 
+/// CLI-facing enum for *setting* an event's availability on add/update.
+/// Unlike `AvailabilityFilter` it has no `notSupported` case — EventKit
+/// reports that for calendars without availability support, but it isn't a
+/// value you can assign to an event. Parsing is case-insensitive, matching
+/// the lenient handling the string-based flag had; unknown values are now
+/// rejected by ArgumentParser instead of being silently ignored.
+public enum AvailabilitySetting: String, CaseIterable, ExpressibleByArgument {
+    case busy, free, tentative, unavailable
+
+    public static var allValueStrings: [String] { Self.allCases.map(\.rawValue) }
+
+    public init?(argument: String) {
+        self.init(rawValue: argument.lowercased())
+    }
+}
+
 /// Pure, side-effect-free filter predicates. Kept as static helpers so they
 /// can be exercised by unit tests without an `EKEventStore`.
 public enum EventFilter {
