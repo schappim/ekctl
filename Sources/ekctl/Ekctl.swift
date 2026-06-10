@@ -332,24 +332,7 @@ struct AddEvent: ParsableCommand {
             }
         }
 
-        func parseAlarms(_ string: String?) -> [Double]? {
-            guard let string = string else { return nil }
-            return string.split(separator: ",").compactMap { component in
-                let s = component.trimmingCharacters(in: .whitespaces)
-                if s.hasPrefix("+") {
-                    if let val = Double(s.dropFirst()) { return val * 60 }
-                    return nil
-                }
-                guard let val = Double(s) else { return nil }
-                if val < 0 {
-                    return val * 60
-                } else {
-                    return -val * 60
-                }
-            }
-        }
-
-        let alarmsList = parseAlarms(alarms)
+        let alarmsList = AlarmParsing.parse(alarms)
 
         let calendarID = ConfigManager.resolveAlias(calendar)
         let result = manager.addEvent(
@@ -500,24 +483,7 @@ struct UpdateEvent: ParsableCommand {
             endDate = try parseDateOption(end, flag: "--end", format: outputFormat.format)
         }
 
-        func parseAlarms(_ string: String?) -> [Double]? {
-            guard let string = string else { return nil }
-            return string.split(separator: ",").compactMap { component in
-                let s = component.trimmingCharacters(in: .whitespaces)
-                if s.hasPrefix("+") {
-                    if let val = Double(s.dropFirst()) { return val * 60 }
-                    return nil
-                }
-                guard let val = Double(s) else { return nil }
-                if val < 0 {
-                    return val * 60
-                } else {
-                    return -val * 60
-                }
-            }
-        }
-
-        let alarmsList = parseAlarms(alarms)
+        let alarmsList = AlarmParsing.parse(alarms)
 
         var travelTimeSeconds: TimeInterval?
         if let ttString = travelTime, let ttInt = Int(ttString) {

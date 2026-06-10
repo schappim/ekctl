@@ -36,17 +36,10 @@ func parsePriority(_ string: String?) -> Int? {
     return Int(string)
 }
 
-/// Mirrors: parseAlarms() in AddEvent.run() / UpdateEvent.run()
+/// The real shared implementation used by AddEvent.run() / UpdateEvent.run()
+/// — no longer a mirror.
 func parseAlarms(_ string: String?) -> [Double]? {
-    guard let string = string else { return nil }
-    return string.split(separator: ",").compactMap { component in
-        let s = component.trimmingCharacters(in: .whitespaces)
-        if s.hasPrefix("+") {
-            return Double(s.dropFirst()).map { $0 * 60 }
-        }
-        guard let val = Double(s) else { return nil }
-        return val < 0 ? val * 60 : -val * 60
-    }
+    AlarmParsing.parse(string)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
