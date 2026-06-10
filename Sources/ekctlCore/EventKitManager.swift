@@ -762,8 +762,11 @@ public class EventKitManager {
         return result
     }
 
-    /// Creates a date formatter that outputs ISO 8601 format in the user's local timezone
-    private func localDateFormatter() -> DateFormatter {
+    /// Date formatter for all timestamp output — ISO 8601 in the user's local
+    /// timezone. Built once per manager (not per item): DateFormatter
+    /// construction is comparatively expensive and `listEvents` renders a
+    /// timestamp pair for every event returned.
+    private lazy var localDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         // POSIX locale forces 24-hour `HH` to actually mean 24-hour, regardless of the
         // user's "Use 24-hour time" system preference (Apple QA1480). Without this, PM
@@ -773,11 +776,11 @@ public class EventKitManager {
         formatter.dateFormat = timeFormat.dateFormatPattern  // ISO 8601 with timezone offset
         formatter.timeZone = TimeZone.current
         return formatter
-    }
+    }()
 
     /// Converts an EKEvent to a dictionary for JSON output
     private func eventToDict(_ event: EKEvent) -> [String: Any] {
-        let formatter = localDateFormatter()
+        let formatter = localDateFormatter
 
         var dict: [String: Any] = [
             "id": event.eventIdentifier ?? "",
@@ -837,7 +840,7 @@ public class EventKitManager {
 
     /// Converts an EKReminder to a dictionary for JSON output
     private func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
-        let formatter = localDateFormatter()
+        let formatter = localDateFormatter
 
         var dict: [String: Any] = [
             "id": reminder.calendarItemIdentifier,
