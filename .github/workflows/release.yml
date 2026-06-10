@@ -1,0 +1,93 @@
+name: Release
+
+# Builds a universal (arm64 + x86_64) ekctl binary and attaches it to the
+# GitHub Release for a tag, so users can install without a full Xcode
+# toolchain (issue #11).
+#
+# Triggers:
+#   - automatically on every pushed v* tag
+#   - manually via workflow_dispatch for an existing tag (used to backfill
+#     releases such as v1.4.0)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g., v1.4.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${DISPATCH_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Build universal binary
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      - name: Sign with entitlements
+        run: |
+          BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/ekctl"
+          codesign --force --sign - --entitlements ekctl.entitlements "$BIN"
+          lipo -info "$BIN"
+
+      - name: Package
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/ekctl"
+          mkdir -p dist
+          cp "$BIN" dist/ekctl
+          tar -C dist -czf "ekctl-${TAG}.tar.gz" ekctl
+          shasum -a 256 "ekctl-${TAG}.tar.gz" > "ekctl-${TAG}.tar.gz.sha256"
+          cat "ekctl-${TAG}.tar.gz.sha256"
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          INSTALL_NOTES="## Install (prebuilt universal binary, no Xcode required)
+
+          \`\`\`bash
+          curl -L -o ekctl.tar.gz https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/ekctl-${TAG}.tar.gz
+          tar -xzf ekctl.tar.gz
+          xattr -d com.apple.quarantine ekctl 2>/dev/null || true
+          sudo mv ekctl /usr/local/bin/
+          \`\`\`
+
+          The binary is universal (arm64 + x86_64) and ad-hoc signed. The \`xattr\` step clears the quarantine flag Gatekeeper puts on downloaded binaries; it is safe to skip if you build from source instead."
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "ekctl-${TAG}.tar.gz" "ekctl-${TAG}.tar.gz.sha256" \
+              --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" \
+              "ekctl-${TAG}.tar.gz" "ekctl-${TAG}.tar.gz.sha256" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$TAG" \
+              --generate-notes \
+              --notes "$INSTALL_NOTES"
+          fi
