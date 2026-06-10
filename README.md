@@ -10,16 +10,32 @@ Native macOS command-line tool for managing Calendar events and Reminders using 
 - Search and filter (`--search`, `--availability busy`) without piping through jq
 - Calendar aliases (use friendly names instead of UUIDs)
 - JSON, CSV, or plain-text output (`--format json|csv|text`)
+- RFC 3339 or jq-friendly compact timestamps (`--time-format rfc3339|compact`)
 - Full EventKit integration with proper permission handling
 - Support for iCloud, Exchange, and local calendars
 
 ## Requirements
 
 - macOS 13.0 (Ventura) or later
-- Xcode Command Line Tools or Xcode
-- Swift 5.9+
+- Building from source additionally requires a full Xcode installation
+  (the Command Line Tools alone currently fail on the SwiftPM manifest);
+  the prebuilt release binary has no build-time requirements
 
 ## Installation
+
+### Prebuilt binary (no Xcode required)
+
+Every release ships a prebuilt universal (Apple Silicon + Intel) binary —
+pick the latest from the [releases page](https://github.com/schappim/ekctl/releases):
+
+```bash
+curl -L -o ekctl.tar.gz https://github.com/schappim/ekctl/releases/download/v1.5.0/ekctl-v1.5.0.tar.gz
+tar -xzf ekctl.tar.gz
+xattr -d com.apple.quarantine ekctl   # release binaries are ad-hoc signed, not notarized
+sudo mv ekctl /usr/local/bin/
+```
+
+A `.sha256` checksum is published next to each tarball.
 
 ### Homebrew
 
@@ -44,7 +60,7 @@ sudo cp .build/release/ekctl /usr/local/bin/
 
 ### Permissions
 
-On first run, macOS will prompt for Calendar and Reminders access. Manage permissions in **System Settings → Privacy & Security → Calendars / Reminders**.
+On first run, macOS will prompt for access to the data the command touches — Calendars, Reminders, or both (e.g., `ekctl list calendars` lists both stores). Commands only request what they need, so a reminders-only workflow never triggers the Calendar prompt. Manage permissions in **System Settings → Privacy & Security → Calendars / Reminders**.
 
 ## Calendars
 
@@ -556,14 +572,26 @@ ekctl delete reminder REMINDER_ID
 
 ## Date Format
 
-All dates use **ISO 8601** format with timezone. Examples:
+All date **inputs** (`--from`, `--to`, `--start`, `--end`, `--due`, `--recurrence-end-date`) accept **ISO 8601** with any of these timezone suffixes, with or without fractional seconds:
 
 | Format | Example | Description |
 | -------- | --------- | ------------- |
 | UTC | `2026-01-15T09:00:00Z` | 9:00 AM UTC |
-| With offset | `2026-01-15T09:00:00+10:00` | 9:00 AM AEST |
-| Midnight | `2026-01-15T00:00:00Z` | Start of day |
-| End of day | `2026-01-15T23:59:59Z` | End of day |
+| Offset with colon | `2026-01-15T09:00:00+10:00` | 9:00 AM AEST (RFC 3339) |
+| Compact offset | `2026-01-15T09:00:00+1000` | Same instant, jq-style `%z` form |
+
+Timestamps in **output** are rendered in your local timezone and are always valid input, so values round-trip between commands. The rendering is controlled by `--time-format` on every command:
+
+- `--time-format rfc3339` (default): colon-separated offset, `Z` for UTC — `2026-01-15T20:00:00+11:00`
+- `--time-format compact`: no colon, and `+0000` instead of `Z` — `2026-01-15T20:00:00+1100`
+
+`compact` exists because jq's `strptime` understands the `%z` offset form (`+1100`) but not the colon-separated `%:z` form (`+11:00`), so it can post-process ekctl timestamps directly:
+
+```bash
+# "09:00AM Standup" — the next 5 events with 12-hour start times
+ekctl next --calendar work --count 5 --time-format compact |
+  jq -r '.events[] | "\(.startDate | strptime("%Y-%m-%dT%H:%M:%S%z") | strftime("%I:%M%p")) \(.title)"'
+```
 
 ## Scripting Examples
 
@@ -648,7 +676,9 @@ Common errors:
 
 - `Permission denied`: Grant access in System Settings → Privacy & Security → Calendars/Reminders
 - `Calendar not found`: Check calendar ID with `ekctl list calendars`
-- `Invalid date format`: Use ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)
+- `Invalid date format`: Use ISO 8601 (e.g., `2026-01-15T09:00:00Z`, `+10:00`, or `+1000` offsets — see [Date Format](#date-format))
+
+Exit codes: `0` success, `1` failure, `2` permission denied, `64` invalid usage (bad flags/values).
 
 ## Help
 
