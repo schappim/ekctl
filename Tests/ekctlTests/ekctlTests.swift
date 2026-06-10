@@ -1122,3 +1122,67 @@ final class UpdateReminderLogicTests: XCTestCase {
         XCTAssertEqual(notes,    "Original notes")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Tests for `DateParsing.parse` — the shared parser behind every date-taking
+/// flag. The defining property (issue #3): anything ekctl can emit must parse
+/// back in, in both the colon (`+11:00`) and compact (`+1100`) offset forms.
+final class DateParsingTests: XCTestCase {
+
+    // ── Accepted: RFC 3339 / colon offsets (original behaviour) ──────────────
+
+    func testParsesUTCZuluForm() {
+        XCTAssertEqual(
+            DateParsing.parse("2026-01-01T00:00:00Z"),
+            Date(timeIntervalSince1970: 1_767_225_600))
+    }
+
+    func testParsesColonSeparatedOffset() {
+        XCTAssertNotNil(DateParsing.parse("2026-03-09T16:00:00-04:00"))
+    }
+
+    // ── Accepted: compact offsets (issue #3) ─────────────────────────────────
+
+    func testParsesCompactOffset() {
+        XCTAssertNotNil(DateParsing.parse("2026-03-09T16:00:00-0400"))
+    }
+
+    func testCompactAndColonOffsetsParseToSameInstant() {
+        XCTAssertEqual(
+            DateParsing.parse("2026-03-09T16:00:00-0400"),
+            DateParsing.parse("2026-03-09T16:00:00-04:00"))
+    }
+
+    func testParsesFractionalSeconds() {
+        XCTAssertEqual(
+            DateParsing.parse("2026-03-09T16:00:00.000Z"),
+            DateParsing.parse("2026-03-09T16:00:00Z"))
+        XCTAssertNotNil(DateParsing.parse("2026-03-09T16:00:00.123+11:00"))
+        XCTAssertNotNil(DateParsing.parse("2026-03-09T16:00:00.123+1100"))
+    }
+
+    // ── Rejected ──────────────────────────────────────────────────────────────
+
+    func testRejectsNonISOInput() {
+        XCTAssertNil(DateParsing.parse("March 5 2026"))
+        XCTAssertNil(DateParsing.parse("05/03/2026"))
+        XCTAssertNil(DateParsing.parse(""))
+        XCTAssertNil(DateParsing.parse("2026-03-05"))  // date-only — no time
+    }
+
+    // ── Round-trip: every form ekctl can emit is valid ekctl input ────────────
+
+    func testEmittedFormatsRoundTrip() {
+        // Mirror both timestamp renderings `localDateFormatter` can produce
+        // (rfc3339 `XXXXX` and compact `xxxx`).
+        for pattern in ["yyyy-MM-dd'T'HH:mm:ssXXXXX", "yyyy-MM-dd'T'HH:mm:ssxxxx"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = pattern
+            formatter.timeZone = TimeZone(identifier: "Australia/Sydney")
+            let emitted = formatter.string(from: Date(timeIntervalSince1970: 1_767_225_600))
+            XCTAssertNotNil(DateParsing.parse(emitted), "Failed to round-trip: \(emitted)")
+        }
+    }
+}
