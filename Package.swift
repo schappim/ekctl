@@ -27,7 +27,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ekctlTests",
-            dependencies: ["ekctlCore"]
+            dependencies: [
+                "ekctlCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ]
         )
     ]
 )

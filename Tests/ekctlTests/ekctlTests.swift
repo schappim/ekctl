@@ -1,3 +1,4 @@
+import ArgumentParser
 import XCTest
 import ekctlCore
 import Foundation
@@ -1160,10 +1161,13 @@ final class TimeFormatTests: XCTestCase {
         XCTAssertEqual(render(.compact, zone: "UTC"), "2026-01-01T00:00:00+0000")
     }
 
-    func testDefaultIsRFC3339() {
-        // The flag default — changing this silently changes every consumer's
-        // output, so pin it.
-        XCTAssertEqual(OutputFormatOptions().timeFormat, .rfc3339)
+    func testDefaultIsRFC3339() throws {
+        // The flag defaults — changing these silently changes every
+        // consumer's output, so pin them. (Must go through parse(); reading
+        // an @Option property on a hand-constructed ParsableArguments traps.)
+        let options = try OutputFormatOptions.parse([])
+        XCTAssertEqual(options.timeFormat, .rfc3339)
+        XCTAssertEqual(options.format, .json)
     }
 
     func testEveryTimeFormatRoundTripsThroughDateParsing() {
