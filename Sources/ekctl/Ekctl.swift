@@ -3,6 +3,22 @@ import EventKit
 import Foundation
 import ekctlCore
 
+// MARK: - Shared Option Parsing
+
+/// Parses a date-flag value via the shared `DateParsing` rules, printing the
+/// standard error payload in the requested output format and failing the
+/// command if the value is unparseable. `flag` names the offending option in
+/// the message (e.g., "--from").
+private func parseDateOption(_ value: String, flag: String, format: OutputFormat) throws -> Date {
+    guard let date = DateParsing.parse(value) else {
+        print(
+            JSONOutput.error("Invalid \(flag) date format. Use \(DateParsing.acceptedFormats).")
+                .format(format))
+        throw ExitCode.failure
+    }
+    return date
+}
+
 // MARK: - Main Command
 
 @main
@@ -59,10 +75,10 @@ struct ListEvents: ParsableCommand {
     )
     var calendar: String
 
-    @Option(name: .long, help: "Start date in ISO8601 format (e.g., 2026-02-01T00:00:00Z).")
+    @Option(name: .long, help: "Start date in \(DateParsing.acceptedFormats).")
     var from: String
 
-    @Option(name: .long, help: "End date in ISO8601 format (e.g., 2026-02-07T23:59:59Z).")
+    @Option(name: .long, help: "End date in \(DateParsing.acceptedFormats).")
     var to: String
 
     @Option(
@@ -83,20 +99,8 @@ struct ListEvents: ParsableCommand {
         let manager = EventKitManager()
         try manager.requestAccess()
 
-        guard let startDate = ISO8601DateFormatter().date(from: from) else {
-            print(
-                JSONOutput.error(
-                    "Invalid --from date format. Use ISO8601 (e.g., 2026-02-01T00:00:00Z)."
-                ).format(outputFormat.format))
-            throw ExitCode.failure
-        }
-        guard let endDate = ISO8601DateFormatter().date(from: to) else {
-            print(
-                JSONOutput.error(
-                    "Invalid --to date format. Use ISO8601 (e.g., 2026-02-07T23:59:59Z)."
-                ).format(outputFormat.format))
-            throw ExitCode.failure
-        }
+        let startDate = try parseDateOption(from, flag: "--from", format: outputFormat.format)
+        let endDate = try parseDateOption(to, flag: "--to", format: outputFormat.format)
 
         let calendarIDs = calendar
             .split(separator: ",")
@@ -209,10 +213,10 @@ struct AddEvent: ParsableCommand {
     @Option(name: .long, help: "The event title.")
     var title: String
 
-    @Option(name: .long, help: "Start date in ISO8601 format.")
+    @Option(name: .long, help: "Start date in \(DateParsing.acceptedFormats).")
     var start: String
 
-    @Option(name: .long, help: "End date in ISO8601 format.")
+    @Option(name: .long, help: "End date in \(DateParsing.acceptedFormats).")
     var end: String
 
     @Option(name: .long, help: "Optional location.")
@@ -235,7 +239,7 @@ struct AddEvent: ParsableCommand {
     @Option(name: .long, help: "Recurrence end count.")
     var recurrenceEndCount: String?
 
-    @Option(name: .long, help: "Recurrence end date in ISO8601 format.")
+    @Option(name: .long, help: "Recurrence end date in \(DateParsing.acceptedFormats).")
     var recurrenceEndDate: String?
 
     @Option(
@@ -282,23 +286,13 @@ struct AddEvent: ParsableCommand {
         let manager = EventKitManager()
         try manager.requestAccess()
 
-        guard let startDate = ISO8601DateFormatter().date(from: start) else {
-            print(JSONOutput.error("Invalid --start date format. Use ISO8601.").format(outputFormat.format))
-            throw ExitCode.failure
-        }
-        guard let endDate = ISO8601DateFormatter().date(from: end) else {
-            print(JSONOutput.error("Invalid --end date format. Use ISO8601.").format(outputFormat.format))
-            throw ExitCode.failure
-        }
+        let startDate = try parseDateOption(start, flag: "--start", format: outputFormat.format)
+        let endDate = try parseDateOption(end, flag: "--end", format: outputFormat.format)
 
         var rEndDate: Date?
         if let recEndDateString = recurrenceEndDate, !recEndDateString.isEmpty {
-            guard let date = ISO8601DateFormatter().date(from: recEndDateString) else {
-                print(
-                    JSONOutput.error("Invalid --recurrence-end-date format. Use ISO8601.").format(outputFormat.format))
-                throw ExitCode.failure
-            }
-            rEndDate = date
+            rEndDate = try parseDateOption(
+                recEndDateString, flag: "--recurrence-end-date", format: outputFormat.format)
         }
 
         // Parse recurrence interval (default to 1)
@@ -397,7 +391,7 @@ struct AddReminder: ParsableCommand {
     @Option(name: .long, help: "The reminder title.")
     var title: String
 
-    @Option(name: .long, help: "Optional due date in ISO8601 format.")
+    @Option(name: .long, help: "Optional due date in \(DateParsing.acceptedFormats).")
     var due: String?
 
     @Option(name: .long, help: "Priority (0=none, 1=high, 5=medium, 9=low).")
@@ -414,11 +408,7 @@ struct AddReminder: ParsableCommand {
 
         var dueDate: Date?
         if let due = due {
-            guard let parsed = ISO8601DateFormatter().date(from: due) else {
-                print(JSONOutput.error("Invalid --due date format. Use ISO8601.").format(outputFormat.format))
-                throw ExitCode.failure
-            }
-            dueDate = parsed
+            dueDate = try parseDateOption(due, flag: "--due", format: outputFormat.format)
         }
 
         // Parse priority: require an integer when provided, else error
@@ -468,10 +458,10 @@ struct UpdateEvent: ParsableCommand {
     @Option(name: .long, help: "New title.")
     var title: String?
 
-    @Option(name: .long, help: "New start date (ISO8601).")
+    @Option(name: .long, help: "New start date in \(DateParsing.acceptedFormats).")
     var start: String?
 
-    @Option(name: .long, help: "New end date (ISO8601).")
+    @Option(name: .long, help: "New end date in \(DateParsing.acceptedFormats).")
     var end: String?
 
     @Option(name: .long, help: "New location.")
@@ -503,19 +493,11 @@ struct UpdateEvent: ParsableCommand {
 
         var startDate: Date?
         if let start = start {
-            guard let da = ISO8601DateFormatter().date(from: start) else {
-                print(JSONOutput.error("Invalid --start date format. Use ISO8601.").format(outputFormat.format))
-                throw ExitCode.failure
-            }
-            startDate = da
+            startDate = try parseDateOption(start, flag: "--start", format: outputFormat.format)
         }
         var endDate: Date?
         if let end = end {
-            guard let da = ISO8601DateFormatter().date(from: end) else {
-                print(JSONOutput.error("Invalid --end date format. Use ISO8601.").format(outputFormat.format))
-                throw ExitCode.failure
-            }
-            endDate = da
+            endDate = try parseDateOption(end, flag: "--end", format: outputFormat.format)
         }
 
         func parseAlarms(_ string: String?) -> [Double]? {
@@ -571,7 +553,7 @@ struct UpdateReminder: ParsableCommand {
     @Option(name: .long, help: "New title.")
     var title: String?
 
-    @Option(name: .long, help: "New due date (ISO8601).")
+    @Option(name: .long, help: "New due date in \(DateParsing.acceptedFormats).")
     var due: String?
 
     @Option(name: .long, help: "New priority (0=none, 1=high, 5=medium, 9=low).")
@@ -591,11 +573,7 @@ struct UpdateReminder: ParsableCommand {
 
         var dueDate: Date?
         if let due = due {
-            guard let parsed = ISO8601DateFormatter().date(from: due) else {
-                print(JSONOutput.error("Invalid --due date format. Use ISO8601.").format(outputFormat.format))
-                throw ExitCode.failure
-            }
-            dueDate = parsed
+            dueDate = try parseDateOption(due, flag: "--due", format: outputFormat.format)
         }
 
         var priorityInt: Int?

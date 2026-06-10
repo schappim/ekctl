@@ -11,9 +11,11 @@ import Foundation
 // They can't be imported because they live in the executable target, so we keep slim wrappers here. 
 // Each one exactly matches the production code — if the production code changes, the behaviour test will catch the drift.
 
-/// Mirrors: guard let date = ISO8601DateFormatter().date(from: input)
+/// Mirrors: parseDateOption() in Ekctl.swift, which delegates to the real
+/// `DateParsing.parse` — so unlike the other mirrors this one exercises the
+/// actual production parser.
 func validateDate(_ input: String) -> Date? {
-    ISO8601DateFormatter().date(from: input)
+    DateParsing.parse(input)
 }
 
 /// Mirrors: TimeInterval(ttInt * 60) in AddEvent.run() / UpdateEvent.run()
@@ -1045,10 +1047,13 @@ final class UpdateReminderLogicTests: XCTestCase {
     // and this test catches it before release.
 
     func testInvalidDueDateProducesCorrectErrorMessage() {
-        let output = JSONOutput.error("Invalid --due date format. Use ISO8601.")
+        let message = "Invalid --due date format. Use \(DateParsing.acceptedFormats)."
+        let output = JSONOutput.error(message)
         let dict = output.toDictionary()
         XCTAssertEqual(dict["status"] as? String, "error")
-        XCTAssertEqual(dict["error"] as? String, "Invalid --due date format. Use ISO8601.")
+        XCTAssertEqual(dict["error"] as? String, message)
+        // Scripts grep for the "Invalid --<flag> date format" prefix — keep it stable.
+        XCTAssertTrue(message.hasPrefix("Invalid --due date format."))
     }
 
     // ── Completed flag — tests the actual conditional logic ───────────────────
