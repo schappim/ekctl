@@ -24,6 +24,23 @@ import Foundation
 ///
 /// 5. Users can manage permissions in: System Settings > Privacy & Security > Calendars/Reminders
 
+/// Which EventKit stores a command touches, and therefore which TCC
+/// permission prompts the user sees on first run. Commands request the
+/// narrowest scope they can: a reminders-only workflow never triggers the
+/// Calendar prompt, and a denied-but-unneeded permission no longer produces
+/// confusing downstream "not found" errors.
+public enum AccessScope {
+    case events
+    case reminders
+    /// Mixed-store commands (e.g. `list calendars`, which lists event
+    /// calendars *and* reminder lists). Proceeds when at least one of the
+    /// two permissions is granted, degrading to the accessible store.
+    case all
+
+    var includesEvents: Bool { self != .reminders }
+    var includesReminders: Bool { self != .events }
+}
+
 public class EventKitManager {
     /// `timeFormat` controls how `eventToDict`/`reminderToDict` render
     /// timestamps — see `TimeFormat` (issue #3).
@@ -36,64 +53,87 @@ public class EventKitManager {
     private var calendarAccessGranted = false
     private var reminderAccessGranted = false
 
-    /// Requests access to both Calendar and Reminders.
-    /// This must be called before any EventKit operations.
-    public func requestAccess() throws {
-        let semaphore = DispatchSemaphore(value: 0)
+    /// Requests access to the EventKit stores named by `scope`.
+    /// This must be called before any other EventKit operation. Denial of a
+    /// *needed* permission prints an error (in `format`) and exits with
+    /// `ExitCode.permissionDenied` so scripts can distinguish it from other
+    /// failures.
+    public func requestAccess(_ scope: AccessScope = .all, format: OutputFormat = .json) throws {
         var calendarError: Error?
         var reminderError: Error?
 
-        // Request calendar access
-        if #available(macOS 14.0, *) {
-            eventStore.requestFullAccessToEvents { granted, error in
-                self.calendarAccessGranted = granted
-                calendarError = error
-                semaphore.signal()
+        if scope.includesEvents {
+            let semaphore = DispatchSemaphore(value: 0)
+            if #available(macOS 14.0, *) {
+                eventStore.requestFullAccessToEvents { granted, error in
+                    self.calendarAccessGranted = granted
+                    calendarError = error
+                    semaphore.signal()
+                }
+            } else {
+                eventStore.requestAccess(to: .event) { granted, error in
+                    self.calendarAccessGranted = granted
+                    calendarError = error
+                    semaphore.signal()
+                }
             }
-        } else {
-            eventStore.requestAccess(to: .event) { granted, error in
-                self.calendarAccessGranted = granted
-                calendarError = error
-                semaphore.signal()
-            }
+            semaphore.wait()
         }
-        semaphore.wait()
 
-        // Request reminders access
-        if #available(macOS 14.0, *) {
-            eventStore.requestFullAccessToReminders { granted, error in
-                self.reminderAccessGranted = granted
-                reminderError = error
-                semaphore.signal()
+        if scope.includesReminders {
+            let semaphore = DispatchSemaphore(value: 0)
+            if #available(macOS 14.0, *) {
+                eventStore.requestFullAccessToReminders { granted, error in
+                    self.reminderAccessGranted = granted
+                    reminderError = error
+                    semaphore.signal()
+                }
+            } else {
+                eventStore.requestAccess(to: .reminder) { granted, error in
+                    self.reminderAccessGranted = granted
+                    reminderError = error
+                    semaphore.signal()
+                }
             }
-        } else {
-            eventStore.requestAccess(to: .reminder) { granted, error in
-                self.reminderAccessGranted = granted
-                reminderError = error
-                semaphore.signal()
-            }
+            semaphore.wait()
         }
-        semaphore.wait()
 
         // Check for errors
         if let error = calendarError {
-            print(JSONOutput.error("Calendar access error: \(error.localizedDescription)").toJSON())
+            print(JSONOutput.error("Calendar access error: \(error.localizedDescription)").format(format))
             throw ExitCode.failure
         }
         if let error = reminderError {
             print(
-                JSONOutput.error("Reminders access error: \(error.localizedDescription)").toJSON())
+                JSONOutput.error("Reminders access error: \(error.localizedDescription)").format(format))
             throw ExitCode.failure
         }
 
-        // Check permissions
-        if !calendarAccessGranted && !reminderAccessGranted {
-            print(
-                JSONOutput.error(
-                    "Permission denied for both Calendar and Reminders. "
-                        + "Please grant access in System Settings > Privacy & Security."
-                ).toJSON())
-            throw ExitCode.failure
+        // Check the permission the requested scope actually depends on, and
+        // name the matching Settings pane in the error.
+        let deniedMessage: String?
+        switch scope {
+        case .events:
+            deniedMessage = calendarAccessGranted
+                ? nil
+                : "Permission denied for Calendar. "
+                    + "Please grant access in System Settings > Privacy & Security > Calendars."
+        case .reminders:
+            deniedMessage = reminderAccessGranted
+                ? nil
+                : "Permission denied for Reminders. "
+                    + "Please grant access in System Settings > Privacy & Security > Reminders."
+        case .all:
+            // Mixed-store commands degrade gracefully when only one side is
+            // granted, so only a full denial is fatal.
+            deniedMessage = (calendarAccessGranted || reminderAccessGranted)
+                ? nil
+                : "Permission denied for both Calendar and Reminders. "
+                    + "Please grant access in System Settings > Privacy & Security."
+        }
+        if let deniedMessage = deniedMessage {
+            print(JSONOutput.error(deniedMessage).format(format))
+            throw ExitCode.permissionDenied
         }
     }
 

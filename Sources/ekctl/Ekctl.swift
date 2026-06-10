@@ -56,7 +56,7 @@ struct ListCalendars: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.all, format: outputFormat.format)
         let result = manager.listCalendars()
         print(result.format(outputFormat.format))
     }
@@ -96,13 +96,13 @@ struct ListEvents: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
-        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
-
+        // Validate arguments before triggering the TCC permission prompt.
         let startDate = try parseDateOption(from, flag: "--from", format: outputFormat.format)
         let endDate = try parseDateOption(to, flag: "--to", format: outputFormat.format)
-
         let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
+
+        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
+        try manager.requestAccess(.events, format: outputFormat.format)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
@@ -136,7 +136,7 @@ struct ListReminders: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.reminders, format: outputFormat.format)
         let listID = ConfigManager.resolveAlias(list)
         let result = manager.listReminders(listID: listID, completed: completed, search: search)
         print(result.format(outputFormat.format))
@@ -165,7 +165,7 @@ struct ShowEvent: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.events, format: outputFormat.format)
         let result = manager.showEvent(eventID: eventID)
         print(result.format(outputFormat.format))
     }
@@ -184,7 +184,7 @@ struct ShowReminder: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.showReminder(reminderID: reminderID)
         print(result.format(outputFormat.format))
     }
@@ -281,9 +281,7 @@ struct AddEvent: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
-        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
-
+        // Validate arguments before triggering the TCC permission prompt.
         let startDate = try parseDateOption(start, flag: "--start", format: outputFormat.format)
         let endDate = try parseDateOption(end, flag: "--end", format: outputFormat.format)
 
@@ -331,8 +329,10 @@ struct AddEvent: ParsableCommand {
         }
 
         let alarmsList = AlarmParsing.parse(alarms)
-
         let calendarID = ConfigManager.resolveAlias(calendar)
+
+        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
+        try manager.requestAccess(.events, format: outputFormat.format)
         let result = manager.addEvent(
             calendarID: calendarID,
             title: title,
@@ -384,9 +384,7 @@ struct AddReminder: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
-        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
-
+        // Validate arguments before triggering the TCC permission prompt.
         var dueDate: Date?
         if let due = due {
             dueDate = try parseDateOption(due, flag: "--due", format: outputFormat.format)
@@ -407,6 +405,9 @@ struct AddReminder: ParsableCommand {
         }
 
         let listID = ConfigManager.resolveAlias(list)
+
+        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
+        try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.addReminder(
             listID: listID,
             title: title,
@@ -469,9 +470,7 @@ struct UpdateEvent: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
-        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
-
+        // Validate arguments before triggering the TCC permission prompt.
         var startDate: Date?
         if let start = start {
             startDate = try parseDateOption(start, flag: "--start", format: outputFormat.format)
@@ -488,6 +487,8 @@ struct UpdateEvent: ParsableCommand {
             travelTimeSeconds = TimeInterval(ttInt * 60)
         }
 
+        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
+        try manager.requestAccess(.events, format: outputFormat.format)
         let result = manager.updateEvent(
             eventID: eventID,
             title: title,
@@ -532,9 +533,7 @@ struct UpdateReminder: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
-        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
-
+        // Validate arguments before triggering the TCC permission prompt.
         var dueDate: Date?
         if let due = due {
             dueDate = try parseDateOption(due, flag: "--due", format: outputFormat.format)
@@ -552,6 +551,8 @@ struct UpdateReminder: ParsableCommand {
             priorityInt = p
         }
 
+        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
+        try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.updateReminder(
             reminderID: reminderID,
             title: title,
@@ -590,7 +591,7 @@ struct CreateCalendar: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.events, format: outputFormat.format)
         let result = manager.createCalendar(title: title, color: color)
         print(result.format(outputFormat.format))
     }
@@ -615,7 +616,8 @@ struct UpdateCalendar: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        // .all: the ID may name an event calendar or a reminder list.
+        try manager.requestAccess(.all, format: outputFormat.format)
         let resolvedID = ConfigManager.resolveAlias(calendarID)
         let result = manager.updateCalendar(calendarID: resolvedID, title: title, color: color)
         print(result.format(outputFormat.format))
@@ -635,7 +637,8 @@ struct DeleteCalendar: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        // .all: the ID may name an event calendar or a reminder list.
+        try manager.requestAccess(.all, format: outputFormat.format)
         // Resolve alias if needed
         let resolvedID = ConfigManager.resolveAlias(calendarID)
         let result = manager.deleteCalendar(calendarID: resolvedID)
@@ -665,7 +668,7 @@ struct DeleteEvent: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.events, format: outputFormat.format)
         let result = manager.deleteEvent(eventID: eventID)
         print(result.format(outputFormat.format))
     }
@@ -684,7 +687,7 @@ struct DeleteReminder: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.deleteReminder(reminderID: reminderID)
         print(result.format(outputFormat.format))
     }
@@ -712,7 +715,7 @@ struct CompleteReminder: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.completeReminder(reminderID: reminderID)
         print(result.format(outputFormat.format))
     }
@@ -853,7 +856,7 @@ struct Today: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.events, format: outputFormat.format)
 
         let (start, end) = DateRanges.today()
         let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
@@ -896,7 +899,7 @@ struct Tomorrow: ParsableCommand {
 
     func run() throws {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
+        try manager.requestAccess(.events, format: outputFormat.format)
 
         let (start, end) = DateRanges.tomorrow()
         let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
@@ -950,9 +953,7 @@ struct Next: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
-        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
-        try manager.requestAccess()
-
+        // Validate arguments before triggering the TCC permission prompt.
         guard count > 0 else {
             print(JSONOutput.error("--count must be a positive integer.").format(outputFormat.format))
             throw ExitCode.failure
@@ -961,6 +962,9 @@ struct Next: ParsableCommand {
             print(JSONOutput.error("--days must be a positive integer.").format(outputFormat.format))
             throw ExitCode.failure
         }
+
+        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
+        try manager.requestAccess(.events, format: outputFormat.format)
 
         let (start, end) = DateRanges.nextWindow(days: days)
         let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
