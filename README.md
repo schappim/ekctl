@@ -29,7 +29,7 @@ Every release ships a prebuilt universal (Apple Silicon + Intel) binary —
 pick the latest from the [releases page](https://github.com/schappim/ekctl/releases):
 
 ```bash
-curl -L -o ekctl.tar.gz https://github.com/schappim/ekctl/releases/download/v1.5.0/ekctl-v1.5.0.tar.gz
+curl -L -o ekctl.tar.gz https://github.com/schappim/ekctl/releases/download/v1.6.0/ekctl-v1.6.0.tar.gz
 tar -xzf ekctl.tar.gz
 xattr -d com.apple.quarantine ekctl   # release binaries are ad-hoc signed, not notarized
 sudo mv ekctl /usr/local/bin/
@@ -212,6 +212,10 @@ ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --search sta
       "notes": null,
       "allDay": false,
       "hasAlarms": true,
+      "alarms": [
+        { "type": "relative", "minutesBeforeStart": 10 }
+      ],
+      "travelTimeMinutes": null,
       "hasRecurrenceRules": false,
       "availability": "busy",
       "attendees": []
@@ -369,10 +373,53 @@ ekctl update event EVENT_ID \
     "notes": "Updated notes",
     "allDay": false,
     "hasAlarms": true,
+    "alarms": [
+      { "type": "relative", "minutesBeforeStart": 10 },
+      { "type": "relative", "minutesBeforeStart": 30 }
+    ],
+    "travelTimeMinutes": 20,
     "hasRecurrenceRules": false
   }
 }
 ```
+
+### Alarms and travel time
+
+`--alarms` takes comma-separated minutes and **replaces** every existing alarm on
+the event (it does not append). A bare number means minutes *before* the start; a
+leading `+` means minutes *after*:
+
+```bash
+ekctl update event EVENT_ID --alarms "10,60"   # 10 min and 1 hour before
+ekctl update event EVENT_ID --alarms "+15"     # 15 min after the start
+ekctl update event EVENT_ID --alarms "0"       # at the start
+```
+
+Both fields are echoed back in the event JSON, in the same units the flags accept,
+so output round-trips into input:
+
+```json
+"alarms": [
+  { "type": "relative", "minutesBeforeStart": 10 },
+  { "type": "relative", "minutesBeforeStart": -15 },
+  { "type": "absolute", "date": "2026-02-15T08:00:00+11:00" }
+],
+"travelTimeMinutes": 20
+```
+
+`minutesBeforeStart` is negative for an alarm that fires *after* the start, matching
+the `+` flag form. Alarms set outside ekctl may be absolute rather than relative, in
+which case they carry a `date` instead. EventKit does not preserve the order alarms
+were supplied in, so read them as a set.
+
+Two things worth knowing:
+
+- `hasAlarms` is **not** evidence that your `--alarms` took effect. Calendars apply a
+  default alarm to new events, so a freshly created event usually reports
+  `hasAlarms: true` with an alarm you never asked for. Check `alarms` instead.
+- `travelTimeMinutes` is `null` when unset. EventKit exposes no public API for travel
+  time, so ekctl reads and writes it through KVC on an undocumented property; if a
+  future macOS drops it, `--travel-time` returns a clear error rather than crashing.
 
 ### Delete Event
 
