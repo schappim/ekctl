@@ -358,8 +358,13 @@ public class EventKitManager {
         if let travelTime = travelTime {
             // IMPORTANT: `travelTime` is set using KVC on a private/undocumented property name ("travelTime").
             // This is intentional as EventKit does not expose a public API for travel time.
-            // This may break in future macOS updates.
-            event.setValue(travelTime, forKey: "travelTime")
+            // See `supportsTravelTime` for why the guard is not optional.
+            guard Self.supportsTravelTime(event) else {
+                return JSONOutput.error(
+                    "Travel time is not supported by EventKit on this version of macOS; omit --travel-time."
+                )
+            }
+            event.setValue(travelTime, forKey: Self.travelTimeKey)
         }
 
         if let alarms = alarms {
@@ -519,9 +524,14 @@ public class EventKitManager {
             event.addRecurrenceRule(rule)
         }
 
-        // Travel Time (Manual)
+        // Travel Time (Manual) — see `supportsTravelTime` for the KVC guard.
         if let tTime = travelTime {
-            event.setValue(tTime, forKey: "travelTime")
+            guard Self.supportsTravelTime(event) else {
+                return JSONOutput.error(
+                    "Travel time is not supported by EventKit on this version of macOS; omit --travel-time."
+                )
+            }
+            event.setValue(tTime, forKey: Self.travelTimeKey)
         }
 
         do {
@@ -778,6 +788,52 @@ public class EventKitManager {
         return formatter
     }()
 
+    /// The undocumented EventKit property backing an event's travel time.
+    /// EventKit exposes no public API for it, so both the read and the write
+    /// go through KVC. `responds(to:)` guards every access: KVC on a key the
+    /// class doesn't define raises `NSUnknownKeyException`, an Objective-C
+    /// exception Swift cannot catch, so an unguarded call would hard-crash the
+    /// CLI if Apple ever drops the property.
+    private static let travelTimeKey = "travelTime"
+
+    static func supportsTravelTime(_ event: EKEvent) -> Bool {
+        event.responds(to: Selector((travelTimeKey)))
+    }
+
+    /// Reads the event's travel time as whole minutes, or nil when unset or
+    /// unsupported on this OS. Mirrors the `--travel-time` flag, which is
+    /// also expressed in minutes.
+    static func travelTimeMinutes(of event: EKEvent) -> Int? {
+        guard supportsTravelTime(event),
+            let seconds = event.value(forKey: travelTimeKey) as? Double,
+            seconds > 0
+        else { return nil }
+        return Int((seconds / 60).rounded())
+    }
+
+    /// Renders alarms in the same units the `--alarms` flag accepts, so output
+    /// round-trips back into input: a relative alarm 10 minutes *before* the
+    /// start reads `minutesBeforeStart: 10`, matching `--alarms "10"`, and one
+    /// 15 minutes *after* reads `-15`, matching `--alarms "+15"`.
+    ///
+    /// Exposed for tests; `formatter` renders absolute alarm dates so this
+    /// stays free of the manager's instance state.
+    public static func alarmDicts(
+        _ alarms: [EKAlarm]?,
+        formatter: (Date) -> String
+    ) -> [[String: Any]] {
+        guard let alarms = alarms else { return [] }
+        return alarms.map { alarm in
+            if let absoluteDate = alarm.absoluteDate {
+                return ["type": "absolute", "date": formatter(absoluteDate)]
+            }
+            // EventKit stores relative offsets as negative seconds for "before
+            // start"; the flag treats positive as "before", so the sign flips.
+            let minutes = Int((-alarm.relativeOffset / 60).rounded())
+            return ["type": "relative", "minutesBeforeStart": minutes]
+        }
+    }
+
     /// Converts an EKEvent to a dictionary for JSON output
     private func eventToDict(_ event: EKEvent) -> [String: Any] {
         let formatter = localDateFormatter
@@ -813,6 +869,12 @@ public class EventKitManager {
         }
 
         dict["hasAlarms"] = event.hasAlarms
+        dict["alarms"] = Self.alarmDicts(event.alarms) { formatter.string(from: $0) }
+        if let travelTimeMinutes = Self.travelTimeMinutes(of: event) {
+            dict["travelTimeMinutes"] = travelTimeMinutes
+        } else {
+            dict["travelTimeMinutes"] = NSNull()
+        }
         dict["hasRecurrenceRules"] = event.hasRecurrenceRules
 
         dict["availability"] = Self.availabilityString(event.availability)

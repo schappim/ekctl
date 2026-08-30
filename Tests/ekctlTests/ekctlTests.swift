@@ -988,6 +988,71 @@ final class DateValidationTests: XCTestCase {
         XCTAssertNil(travelTimeSeconds(from: ""))
     }
 
+    // ── Alarm rendering (inverse of --alarms) ────────────────────────────────
+
+    /// Absolute alarms are the only branch needing a date; a fixed string keeps
+    /// these assertions independent of timezone and formatter settings.
+    private func alarmDicts(_ alarms: [EKAlarm]) -> [[String: Any]] {
+        EventKitManager.alarmDicts(alarms) { _ in "FORMATTED_DATE" }
+    }
+
+    func testAlarmBeforeStartRendersAsPositiveMinutes() {
+        // `--alarms "10"` stores -600s; output must read back as 10.
+        let dicts = alarmDicts([EKAlarm(relativeOffset: -600)])
+        XCTAssertEqual(dicts.count, 1)
+        XCTAssertEqual(dicts[0]["type"] as? String, "relative")
+        XCTAssertEqual(dicts[0]["minutesBeforeStart"] as? Int, 10)
+    }
+
+    func testAlarmAfterStartRendersAsNegativeMinutes() {
+        // `--alarms "+15"` stores +900s; output must read back as -15.
+        let dicts = alarmDicts([EKAlarm(relativeOffset: 900)])
+        XCTAssertEqual(dicts[0]["minutesBeforeStart"] as? Int, -15)
+    }
+
+    func testAlarmAtStartRendersAsZero() {
+        XCTAssertEqual(alarmDicts([EKAlarm(relativeOffset: 0)])[0]["minutesBeforeStart"] as? Int, 0)
+    }
+
+    /// The round trip that makes the field useful: whatever `--alarms` parses,
+    /// the output renders back into the same flag value.
+    func testAlarmRenderingRoundTripsThroughAlarmParsing() {
+        for flagValue in ["10", "30", "+15", "0", "1440"] {
+            let offsets = AlarmParsing.parse(flagValue)!
+            let dicts = alarmDicts(offsets.map { EKAlarm(relativeOffset: $0) })
+            let minutes = dicts[0]["minutesBeforeStart"] as? Int
+            let expected = flagValue.hasPrefix("+") ? -Int(flagValue.dropFirst())! : Int(flagValue)!
+            XCTAssertEqual(minutes, expected, "round trip failed for --alarms \(flagValue)")
+        }
+    }
+
+    func testAbsoluteAlarmRendersDateNotOffset() {
+        let alarm = EKAlarm(absoluteDate: Date(timeIntervalSince1970: 0))
+        let dicts = alarmDicts([alarm])
+        XCTAssertEqual(dicts[0]["type"] as? String, "absolute")
+        XCTAssertEqual(dicts[0]["date"] as? String, "FORMATTED_DATE")
+        XCTAssertNil(dicts[0]["minutesBeforeStart"])
+    }
+
+    func testMultipleAlarmsArePreservedInOrder() {
+        let dicts = alarmDicts([EKAlarm(relativeOffset: -600), EKAlarm(relativeOffset: -1800)])
+        XCTAssertEqual(dicts.map { $0["minutesBeforeStart"] as? Int }, [10, 30])
+    }
+
+    func testNilAlarmsRenderAsEmptyArray() {
+        XCTAssertTrue(EventKitManager.alarmDicts(nil) { _ in "" }.isEmpty)
+    }
+
+    func testEmptyAlarmsRenderAsEmptyArray() {
+        XCTAssertTrue(alarmDicts([]).isEmpty)
+    }
+
+    func testSubMinuteOffsetRoundsToNearestMinute() {
+        // EventKit permits second-level offsets the flag cannot express; they
+        // must round rather than truncate toward zero.
+        XCTAssertEqual(alarmDicts([EKAlarm(relativeOffset: -110)])[0]["minutesBeforeStart"] as? Int, 2)
+    }
+
     // ── Recurrence interval fallback ─────────────────────────────────────────
 
     func testRecurrenceIntervalParsesValidInt() {
