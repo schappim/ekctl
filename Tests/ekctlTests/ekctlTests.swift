@@ -1150,6 +1150,20 @@ final class UpdateReminderLogicTests: XCTestCase {
         XCTAssertTrue(message.hasPrefix("Invalid --due date format."))
     }
 
+    /// The test above interpolates `acceptedFormats`, so it stays green no
+    /// matter how that string changes — it can pin the prefix but not the
+    /// wording. This one holds the wording against a literal, so altering the
+    /// help text every date flag shares is a deliberate act with a visible
+    /// diff, not a silent change to output scripts may match on.
+    func testAcceptedFormatsWordingIsPinned() {
+        XCTAssertEqual(
+            DateParsing.acceptedFormats,
+            "ISO 8601 (e.g., 2026-02-01T09:30:00Z, 2026-02-01T09:30:00+11:00, "
+                + "or 2026-02-01T09:30:00+1100), a date (2026-02-01), a shorthand "
+                + "(now, today, tomorrow, fri, 'tomorrow 3pm', 14:30), or an offset "
+                + "(+90m, +2h, +3d, +1w)")
+    }
+
     // ── Completed flag — tests the actual conditional logic ───────────────────
 
     func testCompletedTrueMarksAsDone() {
@@ -2204,6 +2218,28 @@ final class RelativeDatesTests: XCTestCase {
         XCTAssertEqual(stamp(parse("+2weeks")), "2026-03-25 14:23:00")
     }
 
+    /// Day offsets move the wall clock; hour offsets move real time. On a
+    /// fall-back day the two deliberately diverge, and that contract is what
+    /// keeps a repeated `--from -1d` walk from drifting an hour. 2026-11-01 in
+    /// America/New_York is 25 hours long.
+    func testDayAndHourOffsetsDivergeAcrossFallBack() {
+        var components = DateComponents()
+        components.year = 2026; components.month = 11; components.day = 1
+        components.hour = 0; components.minute = 30
+        let duringLongDay = cal.date(from: components)!
+
+        let plusDay = RelativeDates.parse("+1d", now: duringLongDay, calendar: cal)!
+        XCTAssertEqual(cal.component(.hour, from: plusDay), 0)
+        XCTAssertEqual(cal.component(.minute, from: plusDay), 30)
+        XCTAssertEqual(cal.component(.day, from: plusDay), 2)
+        XCTAssertEqual(plusDay.timeIntervalSince(duringLongDay), 25 * 3600, accuracy: 1)
+
+        let plusHours = RelativeDates.parse("+24h", now: duringLongDay, calendar: cal)!
+        XCTAssertEqual(plusHours.timeIntervalSince(duringLongDay), 24 * 3600, accuracy: 1)
+        XCTAssertEqual(cal.component(.day, from: plusHours), 1)
+        XCTAssertEqual(cal.component(.hour, from: plusHours), 23)
+    }
+
     func testOffsetsKeepTheClockAcrossDST() {
         // 2026-03-08 is the local spring-forward day. Adding days must move the
         // wall clock by whole days, not by 86 400-second blocks.
@@ -2212,7 +2248,7 @@ final class RelativeDatesTests: XCTestCase {
         components.hour = 14; components.minute = 0
         let beforeTransition = cal.date(from: components)!
         let parsed = RelativeDates.parse("+2d", now: beforeTransition, calendar: cal)
-        XCTAssertEqual(cal.component(.hour, from: parsed!), 14)
+        XCTAssertEqual(stamp(parsed), "2026-03-09 14:00:00")
     }
 
     func testRejectsMalformedOffsets() {
@@ -2302,12 +2338,22 @@ final class RelativeDatesTests: XCTestCase {
         XCTAssertNil(parse("14"))
     }
 
+    /// Both sides of each guard, not just values well past them: widening
+    /// either bound by one would otherwise go unnoticed, and "14:60" would
+    /// silently mean 15:00 while "24:00" would mean midnight *tomorrow*.
     func testRejectsOutOfRangeTimes() {
         XCTAssertNil(parse("25:00"))
+        XCTAssertNil(parse("24:00"))
         XCTAssertNil(parse("14:75"))
+        XCTAssertNil(parse("14:60"))
         XCTAssertNil(parse("13pm"))
         XCTAssertNil(parse("0am"))
         XCTAssertNil(parse("9:5"))  // minutes must be two digits
+    }
+
+    func testAcceptsTheTopOfTheRange() {
+        XCTAssertEqual(stamp(parse("23:59")), "2026-03-11 23:59:00")
+        XCTAssertEqual(stamp(parse("12:59am")), "2026-03-11 00:59:00")
     }
 
     // MARK: - Day plus time
