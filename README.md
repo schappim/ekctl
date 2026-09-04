@@ -6,6 +6,7 @@ Native macOS command-line tool for managing Calendar events and Reminders using 
 
 - List, create, update, and delete calendar events
 - List, create, update, complete, and delete reminders
+- Human date input on every flag — `--start "tomorrow 9am"`, `--from today`, `--to +2w`
 - Quick date-range shortcuts: `ekctl today`, `ekctl tomorrow`, `ekctl next`
 - Find open time across calendars with `ekctl free` — working hours, buffers, and multi-calendar merging
 - Search and filter (`--search`, `--availability busy`) without piping through jq
@@ -716,7 +717,38 @@ ekctl delete reminder REMINDER_ID
 
 ## Date Format
 
-All date **inputs** (`--from`, `--to`, `--start`, `--end`, `--due`, `--recurrence-end-date`) accept **ISO 8601** with any of these timezone suffixes, with or without fractional seconds:
+All date **inputs** (`--from`, `--to`, `--start`, `--end`, `--due`, `--recurrence-end-date`) accept either a full ISO 8601 timestamp or a shorthand. The two are interchangeable everywhere:
+
+```bash
+ekctl add event --calendar work --title Standup --start "tomorrow 9am" --end "tomorrow 9:15am"
+ekctl list events --calendar work --from today --to +1w
+ekctl add reminder --list personal --title "Call the dentist" --due "fri 5pm"
+```
+
+### Shorthand
+
+| Form | Example | Means |
+| ------ | --------- | ------- |
+| Now | `now` | The current instant |
+| Offset | `+90m`, `-2h`, `+3d`, `+1w` | From now. Units: `m`/`min`, `h`/`hr`, `d`/`day`, `w`/`week` |
+| Named day | `today`, `tomorrow`, `yesterday` | Local midnight of that day |
+| Weekday | `fri`, `friday` | The next Friday, **today included** |
+| Qualified weekday | `next fri`, `last fri` | The next / previous Friday, **today excluded** |
+| Week | `next week`, `last week` | Seven days either side of today |
+| Plain date | `2026-02-01` | Local midnight |
+| Time | `14:30`, `3pm`, `9:15am` | That time today |
+| Named time | `noon`, `midnight` | |
+| Day + time | `tomorrow 3pm`, `next fri at 09:00`, `2026-02-01 14:30` | Any day above with any time above |
+
+Case doesn't matter, and `at` is optional filler. A bare day resolves to the *start* of that day, which is what `--from tomorrow` should mean.
+
+A bare number like `9` is **rejected**, not guessed — it could be 9am or the 9th, and being wrong there books a meeting three weeks out. Write `9am` or `09:00`. Months and years are not offset units for the same reason: `+3m` is unambiguously 3 minutes.
+
+Times are grafted onto days by wall clock, so `tomorrow 09:00` is 9am even on the day the clocks change.
+
+### ISO 8601
+
+Accepted with any of these timezone suffixes, with or without fractional seconds. ISO is matched first, so a timestamp always parses as itself:
 
 | Format | Example | Description |
 | -------- | --------- | ------------- |
@@ -752,7 +784,7 @@ echo $CALENDAR_ID
 ekctl today --calendar "$CALENDAR_ID"
 ```
 
-The `today` / `tomorrow` / `next` subcommands work out the date range locally so you don't have to wrangle `date -v+1d` (which is BSD-only and breaks under Linux), and they accept the same `--search`, `--availability`, and `--format` flags as `list events`:
+The `today` / `tomorrow` / `next` subcommands work out the date range locally, and they accept the same `--search`, `--availability`, and `--format` flags as `list events`. (For anything they don't cover, `--from` and `--to` take the same shorthand — `--from today --to +1w` — so there's no need to wrangle `date -v+1d` either.)
 
 ```bash
 # Tomorrow's busy meetings as CSV
