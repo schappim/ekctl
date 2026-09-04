@@ -2391,3 +2391,63 @@ final class DateParsingShorthandIntegrationTests: XCTestCase {
         XCTAssertTrue(DateParsing.acceptedFormats.contains("tomorrow"))
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Non-Gregorian region calendars
+///
+/// Every other test in `RelativeDatesTests` injects a Gregorian calendar, but
+/// the shipped entry point — `DateParsing.parse(_:)` — passes
+/// `Calendar.current`, which follows System Settings › Language & Region ›
+/// Calendar. A `yyyy-MM-dd` string always means a *Gregorian* year, so it must
+/// resolve to the same instant no matter what the region calendar is.
+final class NonGregorianCalendarTests: XCTestCase {
+
+    private func calendar(_ identifier: Calendar.Identifier) -> Calendar {
+        var calendar = Calendar(identifier: identifier)
+        calendar.timeZone = TimeZone(identifier: "Australia/Sydney")!
+        return calendar
+    }
+
+    private var now: Date { Date(timeIntervalSince1970: 1_773_246_180) }
+
+    func testPlainDateIsTheSameInstantInEveryRegionCalendar() {
+        let reference = RelativeDates.parse("2026-02-01", now: now, calendar: calendar(.gregorian))
+        XCTAssertNotNil(reference)
+
+        for identifier in [Calendar.Identifier.buddhist, .japanese, .hebrew, .persian,
+                           .islamicUmmAlQura, .republicOfChina, .iso8601, .coptic] {
+            XCTAssertEqual(
+                RelativeDates.parse("2026-02-01", now: now, calendar: calendar(identifier)),
+                reference,
+                "plain date drifted under the \(identifier) calendar")
+        }
+    }
+
+    func testPlainDateWithATimeIsAlsoStable() {
+        let reference = RelativeDates.parse("2026-02-01 14:30", now: now,
+                                            calendar: calendar(.gregorian))
+        XCTAssertNotNil(reference)
+        XCTAssertEqual(
+            RelativeDates.parse("2026-02-01 14:30", now: now, calendar: calendar(.buddhist)),
+            reference)
+    }
+
+    /// A plain date must also agree with the ISO 8601 spelling of the same
+    /// instant — the README calls the two interchangeable.
+    func testPlainDateAgreesWithTheISOSpelling() {
+        var sydney = Calendar(identifier: .buddhist)
+        sydney.timeZone = TimeZone(identifier: "Australia/Sydney")!
+        XCTAssertEqual(
+            RelativeDates.parse("2026-02-01", now: now, calendar: sydney),
+            DateParsing.parse("2026-02-01T00:00:00+11:00"))
+    }
+
+    func testImpossibleAndSignedDatesAreStillRejected() {
+        for bad in ["2026-02-31", "2026-13-01", "0000-01-01", "+026-02-01",
+                    "2026-+2-01", "2026-02-+1"] {
+            XCTAssertNil(RelativeDates.parse(bad, now: now, calendar: calendar(.gregorian)),
+                         "should reject: \(bad)")
+        }
+    }
+}

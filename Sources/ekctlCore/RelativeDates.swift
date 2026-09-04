@@ -159,25 +159,44 @@ public enum RelativeDates {
 
     /// `2026-02-01` — a plain date, which the ISO 8601 formatters reject
     /// because they require a time component.
+    ///
+    /// Resolved against a Gregorian calendar carrying the caller's time zone,
+    /// never against the caller's own calendar. `2026` in a `yyyy-MM-dd` string
+    /// is a Gregorian year; handing it to a Mac whose region calendar is
+    /// Buddhist or Japanese reinterprets it as a year in *that* era and lands
+    /// centuries away — silently, because a wrong year still round-trips the
+    /// day and month checks below. Every other shorthand form is immune, since
+    /// it only ever moves within one calendar.
     static func isoDate(_ token: String, calendar: Calendar) -> Date? {
         let parts = token.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count == 3,
               parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+              parts.allSatisfy(isAllDigits),
               let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]),
               (1...12).contains(month), (1...31).contains(day)
         else { return nil }
+
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
 
         var components = DateComponents()
         components.year = year
         components.month = month
         components.day = day
-        guard let date = calendar.date(from: components) else { return nil }
-        // Reject 2026-02-31 and friends rather than letting Foundation roll
-        // them into the following month.
-        guard calendar.component(.day, from: date) == day,
-              calendar.component(.month, from: date) == month
+        guard let date = gregorian.date(from: components) else { return nil }
+        // Reject 2026-02-31 and 0000-01-01 rather than letting Foundation roll
+        // them into a neighbouring month or era.
+        guard gregorian.component(.day, from: date) == day,
+              gregorian.component(.month, from: date) == month,
+              gregorian.component(.year, from: date) == year
         else { return nil }
         return date
+    }
+
+    /// ASCII digits only. `Int("+026")` is 26 and `Int("٣")` is 3, so a plain
+    /// `Int(_:)` would let `+026-02-01` through as year 26.
+    static func isAllDigits<S: StringProtocol>(_ text: S) -> Bool {
+        !text.isEmpty && text.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
     // MARK: - Times
