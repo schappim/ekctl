@@ -66,6 +66,15 @@ public struct WorkingHours: Equatable {
     /// An overnight window: it opens on one day and closes on the next.
     public var spansMidnight: Bool { !isFullDay && endMinutes <= startMinutes }
 
+    /// `HH:MM-HH:MM` rendering, echoed back in `ekctl free` output so a
+    /// caller can confirm which window was actually searched.
+    public var formatted: String {
+        func render(_ minutes: Int) -> String {
+            String(format: "%02d:%02d", minutes / 60, minutes % 60)
+        }
+        return "\(render(startMinutes))-\(render(endMinutes))"
+    }
+
     /// One-line summary of accepted values, shared by the flag help and the
     /// error message so the two can't drift.
     public static let acceptedFormats = "HH:MM-HH:MM (e.g., 09:00-17:00), or 'all' for the whole day"
@@ -123,6 +132,12 @@ public enum Weekdays {
     public static let monToFri: Set<Int> = [2, 3, 4, 5, 6]
     public static let weekend: Set<Int> = [1, 7]
     public static let all: Set<Int> = [1, 2, 3, 4, 5, 6, 7]
+
+    /// Comma-separated day names for a set of weekday numbers, in week order —
+    /// the inverse of `parse`, echoed back in `ekctl free` output.
+    public static func formatted(_ weekdays: Set<Int>) -> String {
+        weekdays.sorted().map { name(for: $0) }.joined(separator: ",")
+    }
 
     /// Lowercase weekday name for a `Calendar` weekday number, used in output.
     public static func name(for weekday: Int) -> String {

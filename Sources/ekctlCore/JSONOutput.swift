@@ -152,7 +152,7 @@ enum OutputFormatter {
     /// Singular keys → wrap in a one-element list.
     /// Otherwise → treat the whole dict as a single row.
     static func primaryRows(in data: [String: Any]) -> [[String: Any]] {
-        let listKeys = ["events", "reminders", "calendars", "aliases"]
+        let listKeys = ["events", "reminders", "calendars", "aliases", "slots"]
         for key in listKeys {
             if let list = data[key] as? [[String: Any]] { return list }
         }

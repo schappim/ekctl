@@ -31,7 +31,7 @@ struct Ekctl: ParsableCommand {
         subcommands: [
             List.self, Show.self, Add.self, Update.self, Delete.self, Complete.self, Alias.self,
             CalendarCmd.self,
-            Today.self, Tomorrow.self, Next.self,
+            Today.self, Tomorrow.self, Next.self, Free.self,
         ],
         defaultSubcommand: List.self
     )
@@ -977,6 +977,136 @@ struct Next: ParsableCommand {
             availability: availability,
             sortedByStartAscending: true,
             limit: count)
+        print(result.format(outputFormat.format))
+    }
+}
+
+
+// MARK: - Free/Busy Command
+
+/// `ekctl free` — the inverse of `list events`: instead of what's booked, what
+/// isn't. Merging busy intervals across calendars, clipping them to working
+/// hours day by day, and doing it without DST errors is the one calendar
+/// question a jq pipeline can't reasonably answer, so it lives here.
+struct Free: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "free",
+        abstract: "Find open time slots across one or more calendars.",
+        discussion: """
+            Reports the gaps between your commitments, in chronological order. \
+            An event blocks its time unless it is marked free, cancelled, or an \
+            invitation you declined.
+
+            Examples:
+              ekctl free --calendar work --duration 30
+              ekctl free --calendar work,personal --duration 60 --days 14 --buffer 15
+              ekctl free --calendar work --working-hours 08:00-18:00 --weekdays mon-thu --round 15
+            """
+    )
+
+    @Option(
+        name: .long,
+        help: "Calendar ID or alias. Pass multiple comma-separated values to search several calendars at once (e.g., work,personal)."
+    )
+    var calendar: String
+
+    @Option(name: .long, help: "Minimum length of a usable slot, in minutes.")
+    var duration: Int = 30
+
+    @Option(name: .long, help: "Search start in \(DateParsing.acceptedFormats). Defaults to now.")
+    var from: String?
+
+    @Option(
+        name: .long,
+        help: "Search end in \(DateParsing.acceptedFormats). Defaults to --days after the start."
+    )
+    var to: String?
+
+    @Option(name: .long, help: "How many days to search when --to is omitted.")
+    var days: Int = 7
+
+    @Option(
+        name: .long,
+        help: "Daily window to search: \(WorkingHours.acceptedFormats). Overnight windows such as 22:00-02:00 are supported."
+    )
+    var workingHours: String = "09:00-17:00"
+
+    @Option(name: .long, help: "Days to consider: \(Weekdays.acceptedFormats).")
+    var weekdays: String = "weekdays"
+
+    @Option(
+        name: .long,
+        help: "Minutes of breathing room to leave either side of every meeting."
+    )
+    var buffer: Int = 0
+
+    @Option(
+        name: .long,
+        help: "Round slot starts up to the next multiple of this many minutes, e.g. 15. Zero keeps the exact gap edges."
+    )
+    var round: Int = 0
+
+    @Option(name: .long, help: "Maximum number of slots to return.")
+    var limit: Int = 20
+
+    @Flag(
+        name: .long,
+        help: "Ignore all-day events entirely. By default a busy all-day event blocks its days."
+    )
+    var ignoreAllDay: Bool = false
+
+    @OptionGroup var outputFormat: OutputFormatOptions
+
+    func run() throws {
+        // Validate every argument before triggering the TCC permission prompt,
+        // so a typo'd flag doesn't cost the user a permission dialog.
+        func fail(_ message: String) -> Error {
+            print(JSONOutput.error(message).format(outputFormat.format))
+            return ExitCode.failure
+        }
+
+        guard duration > 0 else { throw fail("--duration must be a positive number of minutes.") }
+        guard days > 0 else { throw fail("--days must be a positive integer.") }
+        guard buffer >= 0 else { throw fail("--buffer cannot be negative.") }
+        guard round >= 0 else { throw fail("--round cannot be negative.") }
+        guard limit > 0 else { throw fail("--limit must be a positive integer.") }
+
+        guard let hours = WorkingHours.parse(workingHours) else {
+            throw fail("Invalid --working-hours value. Use \(WorkingHours.acceptedFormats).")
+        }
+        guard let selectedWeekdays = Weekdays.parse(weekdays) else {
+            throw fail("Invalid --weekdays value. Use \(Weekdays.acceptedFormats).")
+        }
+
+        let startDate = try from.map {
+            try parseDateOption($0, flag: "--from", format: outputFormat.format)
+        } ?? Date()
+        let endDate: Date
+        if let to = to {
+            endDate = try parseDateOption(to, flag: "--to", format: outputFormat.format)
+        } else {
+            endDate = DateRanges.nextWindow(now: startDate, days: days).end
+        }
+        guard startDate < endDate else {
+            throw fail("The search range is empty: --to must be later than --from.")
+        }
+
+        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
+
+        let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
+        try manager.requestAccess(.events, format: outputFormat.format)
+
+        let result = manager.findFreeSlots(
+            calendarIDs: calendarIDs,
+            from: startDate,
+            to: endDate,
+            durationMinutes: duration,
+            workingHours: hours,
+            weekdays: selectedWeekdays,
+            bufferMinutes: buffer,
+            roundToMinutes: round,
+            limit: limit,
+            ignoreAllDay: ignoreAllDay)
         print(result.format(outputFormat.format))
     }
 }

@@ -308,6 +308,103 @@ public class EventKitManager {
         }
     }
 
+    /// Finds open time slots across `calendarIDs` — the engine behind
+    /// `ekctl free`.
+    ///
+    /// An event blocks its interval unless it is marked *free*: availability is
+    /// the user's own statement about whether the time is really taken, so it
+    /// is used in preference to any guess based on titles. Cancelled events and
+    /// invitations the user has declined don't block — they aren't commitments.
+    /// All-day events block by their availability like anything else (a busy
+    /// all-day "Offsite" is exactly the conflict you want surfaced); pass
+    /// `ignoreAllDay` to drop them entirely.
+    public func findFreeSlots(
+        calendarIDs: [String],
+        from startDate: Date,
+        to endDate: Date,
+        durationMinutes: Int,
+        workingHours: WorkingHours,
+        weekdays: Set<Int>,
+        bufferMinutes: Int = 0,
+        roundToMinutes: Int = 0,
+        limit: Int? = nil,
+        ignoreAllDay: Bool = false
+    ) -> JSONOutput {
+        var calendars: [EKCalendar] = []
+        for id in calendarIDs {
+            guard let calendar = eventStore.calendar(withIdentifier: id) else {
+                return JSONOutput.error("Calendar not found with ID: \(id)")
+            }
+            calendars.append(calendar)
+        }
+
+        let predicate = eventStore.predicateForEvents(
+            withStart: startDate,
+            end: endDate,
+            calendars: calendars
+        )
+
+        let events = eventStore.events(matching: predicate)
+        let busy: [TimeSlot] = events.compactMap { event in
+            guard Self.blocksTime(event, ignoreAllDay: ignoreAllDay),
+                  let start = event.startDate,
+                  let end = event.endDate
+            else { return nil }
+            return TimeSlot(start: start, end: end)
+        }
+
+        let slots = FreeBusy.slots(
+            busy: busy,
+            from: startDate,
+            to: endDate,
+            workingHours: workingHours,
+            weekdays: weekdays,
+            minimumDurationMinutes: durationMinutes,
+            bufferMinutes: bufferMinutes,
+            roundToMinutes: roundToMinutes,
+            limit: limit
+        )
+
+        let formatter = localDateFormatter
+        let dayFormatter = localDayFormatter
+        let calendar = Calendar.current
+        let slotDicts: [[String: Any]] = slots.map { slot in
+            [
+                "start": formatter.string(from: slot.start),
+                "end": formatter.string(from: slot.end),
+                "durationMinutes": slot.durationMinutes,
+                "date": dayFormatter.string(from: slot.start),
+                "weekday": Weekdays.name(for: calendar.component(.weekday, from: slot.start)),
+            ]
+        }
+
+        return JSONOutput.success([
+            "slots": slotDicts,
+            "count": slotDicts.count,
+            "durationMinutes": durationMinutes,
+            "searchedFrom": formatter.string(from: startDate),
+            "searchedTo": formatter.string(from: endDate),
+            "workingHours": workingHours.formatted,
+            "weekdays": Weekdays.formatted(weekdays),
+            "busyEventCount": busy.count,
+        ])
+    }
+
+    /// Whether an event occupies time for free-slot purposes. Split out from
+    /// `findFreeSlots` so the rule has one home: not marked free, not
+    /// cancelled, not declined by the user, and (optionally) not all-day.
+    static func blocksTime(_ event: EKEvent, ignoreAllDay: Bool) -> Bool {
+        if ignoreAllDay && event.isAllDay { return false }
+        if event.availability == .free { return false }
+        if event.status == .canceled { return false }
+        if let attendees = event.attendees,
+           let me = attendees.first(where: { $0.isCurrentUser }),
+           me.participantStatus == .declined {
+            return false
+        }
+        return true
+    }
+
     /// Shows details of a specific event
     public func showEvent(eventID: String) -> JSONOutput {
         guard let event = eventStore.event(withIdentifier: eventID) else {
@@ -784,6 +881,17 @@ public class EventKitManager {
         // — e.g. 16:00 becomes "4:00" (see issue #8).
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = timeFormat.dateFormatPattern  // ISO 8601 with timezone offset
+        formatter.timeZone = TimeZone.current
+        return formatter
+    }()
+
+    /// `yyyy-MM-dd` in the local zone, for the `date` field on a free slot.
+    /// POSIX locale for the same reason as `localDateFormatter`: the pattern
+    /// must mean what it says regardless of the user's regional settings.
+    private lazy var localDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
         formatter.timeZone = TimeZone.current
         return formatter
     }()
