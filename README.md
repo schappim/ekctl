@@ -7,6 +7,7 @@ Native macOS command-line tool for managing Calendar events and Reminders using 
 - List, create, update, and delete calendar events
 - List, create, update, complete, and delete reminders
 - Quick date-range shortcuts: `ekctl today`, `ekctl tomorrow`, `ekctl next`
+- Find open time across calendars with `ekctl free` — working hours, buffers, and multi-calendar merging
 - Search and filter (`--search`, `--availability busy`) without piping through jq
 - Calendar aliases (use friendly names instead of UUIDs)
 - JSON, CSV, or plain-text output (`--format json|csv|text`)
@@ -439,6 +440,102 @@ ekctl delete event EVENT_ID
 }
 ```
 
+## Finding Free Time
+
+`ekctl free` answers the question `list events` can't: not what's booked, but what isn't. It merges the busy intervals from every calendar you name, clips them to your working hours day by day, and reports the gaps big enough to be useful.
+
+```bash
+ekctl free --calendar work --duration 30
+```
+
+**Output:**
+
+```json
+{
+  "count": 3,
+  "durationMinutes": 30,
+  "slots": [
+    {
+      "start": "2026-09-07T09:00:00+10:00",
+      "end": "2026-09-07T10:00:00+10:00",
+      "durationMinutes": 60,
+      "date": "2026-09-07",
+      "weekday": "monday"
+    },
+    {
+      "start": "2026-09-07T11:00:00+10:00",
+      "end": "2026-09-07T13:00:00+10:00",
+      "durationMinutes": 120,
+      "date": "2026-09-07",
+      "weekday": "monday"
+    }
+  ],
+  "searchedFrom": "2026-09-07T08:15:00+10:00",
+  "searchedTo": "2026-09-14T08:15:00+10:00",
+  "workingHours": "09:00-17:00",
+  "weekdays": "monday,tuesday,wednesday,thursday,friday",
+  "busyEventCount": 11,
+  "status": "success"
+}
+```
+
+Each slot is a *maximal* gap, so `durationMinutes` tells you how much room you actually have — `--duration` is the minimum a gap must reach to be reported, not the size of the slot returned. Slots come back in chronological order.
+
+### Options
+
+| Flag | Default | Description |
+| ------ | --------- | ------------- |
+| `--calendar` | *required* | Calendar ID or alias. Comma-separated for several (`work,personal`) — their events are merged into one busy view. |
+| `--duration` | `30` | Minimum usable slot length, in minutes. |
+| `--from` | now | Search start (ISO 8601). |
+| `--to` | `--days` after the start | Search end (ISO 8601). |
+| `--days` | `7` | How far ahead to search when `--to` is omitted. |
+| `--working-hours` | `09:00-17:00` | Daily window. `all` searches the whole day; overnight windows like `22:00-02:00` are supported. |
+| `--weekdays` | `weekdays` | `mon,wed,fri`, a range (`mon-fri`, `fri-mon` wraps), or `weekdays` / `weekends` / `all`. |
+| `--buffer` | `0` | Minutes to leave either side of every meeting, so back-to-back slots aren't proposed. |
+| `--round` | `0` | Round slot starts up to the next multiple of N minutes (e.g. `15`), instead of whenever the previous meeting ended. |
+| `--limit` | `20` | Maximum slots to return. |
+| `--ignore-all-day` | off | Drop all-day events entirely instead of honouring their availability. |
+
+### What counts as busy
+
+An event blocks its time unless *you've already said it doesn't*:
+
+- **Marked free** — `availability: free` never blocks. Everything else does, including `tentative`, `unavailable`, and the `notSupported` that calendars without availability report.
+- **Cancelled** — an event with a cancelled status doesn't block.
+- **Declined** — an invitation you declined isn't a commitment, so it doesn't block.
+- **All-day events** block according to their availability like anything else, so a busy all-day "Offsite" takes out the day while a free all-day birthday doesn't. Pass `--ignore-all-day` to skip them regardless.
+
+The rule leans on the availability you (or your calendar server) already recorded rather than guessing from event titles.
+
+### Examples
+
+```bash
+# An hour, in the next fortnight, with 15 minutes' padding around every meeting
+ekctl free --calendar work,personal --duration 60 --days 14 --buffer 15
+
+# Early starts and Fridays off, with times landing on the quarter hour
+ekctl free --calendar work --working-hours 08:00-16:00 --weekdays mon-thu --round 15
+
+# Any time at all this weekend — for scheduling that isn't work
+ekctl free --calendar personal --working-hours all --weekdays weekends
+
+# Human-readable, for eyeballing
+ekctl free --calendar work --duration 45 --format text
+```
+
+The earliest workable start time, as a one-liner:
+
+```bash
+ekctl free --calendar work --duration 30 --limit 1 | jq -r '.slots[0].start'
+```
+
+Slots are a first-class row type in CSV and text output, the same as events and reminders:
+
+```bash
+ekctl free --calendar work --duration 30 --days 30 --format csv > openings.csv
+```
+
 ## Reminders
 
 ### List Reminders
@@ -699,6 +796,21 @@ ekctl list events \
 ```
 
 Nested objects flatten to dot-notated columns (e.g., `calendar.id`, `calendar.title`), and nested arrays (like `attendees`) become a single JSON-encoded cell.
+
+### Find a slot and book it
+
+`free` and `add event` compose — the slot's `start` is already in a format `--start` accepts:
+
+```bash
+# --time-format compact so jq's strptime can read the offset (see Date Format)
+SLOT=$(ekctl free --calendar work --duration 30 --limit 1 --time-format compact)
+START=$(echo "$SLOT" | jq -r '.slots[0].start')
+END=$(echo "$SLOT" | jq -r '.slots[0].start
+  | strptime("%Y-%m-%dT%H:%M:%S%z") | mktime + 1800
+  | strftime("%Y-%m-%dT%H:%M:%SZ")')
+
+ekctl add event --calendar work --title "Focus block" --start "$START" --end "$END"
+```
 
 ### Human-readable plain text
 
