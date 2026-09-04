@@ -1837,7 +1837,28 @@ final class FreeBusyTests: XCTestCase {
         ])
     }
 
-    func testSlotsStopsAtTheLimit() {
+    /// The limit counts *returned* slots, and it has to bite inside a day. With
+    /// an empty busy list every day yields exactly one slot, so such a test
+    /// couldn't tell a per-slot limit from a per-day or per-window one; the
+    /// gaps here are all within one day, and the sub-minimum first gap must not
+    /// count towards the limit.
+    func testSlotsStopsAtTheLimitWithinASingleDay() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(9, 20, 10, 0, in: cal), slot(11, 0, 11, 20, in: cal), slot(13, 0, 13, 30, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            minimumDurationMinutes: 30,
+            limit: 2,
+            calendar: cal)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, [
+            "03-11 10:00–03-11 11:00",
+            "03-11 11:20–03-11 13:00",
+        ])
+    }
+
+    func testSlotsStopsAtTheLimitAcrossDays() {
         let cal = calendar()
         let found = FreeBusy.slots(
             busy: [],
@@ -1903,6 +1924,101 @@ final class FreeBusyTests: XCTestCase {
             weekdays: Weekdays.all,
             calendar: cal)
         XCTAssertTrue(found.isEmpty)
+    }
+
+    // MARK: - Zones whose DST transition lands on midnight
+
+    /// Chile moves the clock at midnight (2026-09-06 00:00 → 01:00), so that
+    /// day has no midnight at all. Stepping the day cursor by plain day
+    /// addition parks it at 01:00 and leaves it there for every later day,
+    /// producing 25-hour full-day windows that overlap their neighbours.
+    /// Each window must still be exactly one local day, back to back.
+    func testFullDayWindowsDoNotDriftAcrossAMidnightDSTTransition() {
+        let cal = calendar(in: "America/Santiago")
+        let windows = FreeBusy.windows(from: date(2026, 9, 4, 0, 0, in: cal),
+                                       to: date(2026, 9, 10, 0, 0, in: cal),
+                                       workingHours: .allDay,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows.count, 6)
+
+        for (index, window) in windows.enumerated() {
+            // Every window starts at the first instant of its local day — 01:00
+            // on the transition day, which has no 00:00.
+            XCTAssertEqual(window.start, cal.startOfDay(for: window.start),
+                           "window \(index) does not start at local midnight")
+            // And runs exactly to the start of the next local day, with no gap
+            // or overlap against the following window.
+            if index + 1 < windows.count {
+                XCTAssertEqual(window.end, windows[index + 1].start,
+                               "window \(index) does not abut the next one")
+            }
+        }
+
+        // The transition day itself is 23 hours long.
+        XCTAssertEqual(windows[2].end.timeIntervalSince(windows[2].start), 23 * 3600, accuracy: 1)
+    }
+
+    /// The working-hours edges must survive the same transition: 09:00 stays
+    /// 09:00 on the day with no midnight.
+    func testWorkingHoursSurviveAMidnightDSTTransition() {
+        let cal = calendar(in: "America/Santiago")
+        let windows = FreeBusy.windows(from: date(2026, 9, 6, 3, 0, in: cal),
+                                       to: date(2026, 9, 8, 0, 0, in: cal),
+                                       workingHours: .standard,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows.map { wallclock($0, in: cal) }, [
+            "09-06 09:00–09-06 17:00",
+            "09-07 09:00–09-07 17:00",
+        ])
+    }
+
+    // MARK: - Rounding across DST
+
+    /// Rounding on elapsed seconds since midnight rather than the wall clock
+    /// puts the start an hour off on a spring-forward day: 09:07 with --round
+    /// 45 would come back as 09:15, which isn't a multiple of 45 minutes past
+    /// midnight at all.
+    func testRoundStartUpUsesWallClockOnSpringForwardDay() {
+        let cal = calendar(in: "America/New_York")
+        let gap = TimeSlot(start: date(2026, 3, 8, 9, 7, in: cal),
+                           end: date(2026, 3, 8, 17, 0, in: cal))
+        let rounded = FreeBusy.roundStartUp(gap, toMultipleOfMinutes: 45, calendar: cal)
+        XCTAssertEqual(wallclock(rounded!, in: cal), "03-08 09:45–03-08 17:00")
+    }
+
+    /// Lord Howe Island shifts by half an hour on 2026-10-04, so after the
+    /// transition the elapsed time since midnight trails the wall clock by 30
+    /// minutes. Rounding on elapsed seconds would return 10:30 for --round 60
+    /// — not a whole hour at all. (A --round of 15 or 30 divides the shift and
+    /// so hides the bug; 60 is where the two disagree.)
+    func testRoundStartUpHoldsTheGridInAHalfHourDSTZone() {
+        let cal = calendar(in: "Australia/Lord_Howe")
+        let gap = TimeSlot(start: date(2026, 10, 4, 10, 7, in: cal),
+                           end: date(2026, 10, 4, 17, 0, in: cal))
+        let rounded = FreeBusy.roundStartUp(gap, toMultipleOfMinutes: 60, calendar: cal)!
+        XCTAssertEqual(cal.component(.minute, from: rounded.start), 0)
+        XCTAssertEqual(wallclock(rounded, in: cal), "10-04 11:00–10-04 17:00")
+    }
+
+    /// A start already on the grid but carrying seconds still has to move up to
+    /// the next boundary — otherwise a slot would be reported starting at
+    /// 10:00:30.
+    func testRoundStartUpAdvancesPastStrayScondsOnAnAlignedStart() {
+        let cal = calendar()
+        let gap = TimeSlot(start: date(2026, 3, 11, 10, 0, in: cal).addingTimeInterval(30),
+                           end: date(2026, 3, 11, 12, 0, in: cal))
+        let rounded = FreeBusy.roundStartUp(gap, toMultipleOfMinutes: 15, calendar: cal)
+        XCTAssertEqual(wallclock(rounded!, in: cal), "03-11 10:15–03-11 12:00")
+    }
+
+    /// Rounding forward out of the day drops the slot rather than wrapping.
+    func testRoundStartUpDropsASlotThatRoundsPastMidnight() {
+        let cal = calendar()
+        let gap = TimeSlot(start: date(2026, 3, 11, 23, 50, in: cal),
+                           end: date(2026, 3, 11, 23, 55, in: cal))
+        XCTAssertNil(FreeBusy.roundStartUp(gap, toMultipleOfMinutes: 30, calendar: cal))
     }
 }
 

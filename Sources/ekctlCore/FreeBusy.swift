@@ -244,8 +244,15 @@ public enum FreeBusy {
             ?? calendar.startOfDay(for: from)
 
         while day < to {
-            guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day), nextDay > day
+            // Re-anchor to local midnight every step. In zones whose DST
+            // transition lands *on* midnight (America/Santiago, America/Havana)
+            // that midnight doesn't exist, so plain day-addition parks the
+            // cursor an hour late and keeps it there — every later full-day
+            // window would run 25 hours and overlap its neighbour.
+            guard let advanced = calendar.date(byAdding: .day, value: 1, to: day)
             else { break }
+            let nextDay = calendar.startOfDay(for: advanced)
+            guard nextDay > day else { break }
 
             if weekdays.contains(calendar.component(.weekday, from: day)),
                let window = dayWindow(on: day, nextDay: nextDay, hours: workingHours, calendar: calendar) {
@@ -286,6 +293,7 @@ public enum FreeBusy {
     private static func wallClock(minutes: Int, on day: Date, calendar: Calendar) -> Date? {
         guard minutes < 24 * 60 else {
             return calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: day))
+                .map { calendar.startOfDay(for: $0) }
         }
         var components = calendar.dateComponents([.year, .month, .day], from: day)
         components.hour = minutes / 60
@@ -320,18 +328,29 @@ public enum FreeBusy {
     /// local midnight (`--round`), so proposed times land on :00 / :15 / :30
     /// instead of whenever the previous meeting happened to end. Returns `nil`
     /// if rounding consumes the slot.
+    ///
+    /// The rounding is done on the *wall clock*, not on elapsed seconds since
+    /// midnight: on a DST-transition day the two differ by the shift, and a
+    /// zone with a half-hour shift (Australia/Lord_Howe) would otherwise land
+    /// slots on :20 and :50 while the flag promises the quarter hour.
     public static func roundStartUp(_ slot: TimeSlot,
                                     toMultipleOfMinutes minutes: Int,
                                     calendar: Calendar = .current) -> TimeSlot? {
         guard minutes > 0 else { return slot }
 
-        let dayStart = calendar.startOfDay(for: slot.start)
-        let step = Double(minutes) * 60
-        let offset = slot.start.timeIntervalSince(dayStart)
-        let rounded = (offset / step).rounded(.up) * step
-        guard rounded > offset else { return slot }
+        let components = calendar.dateComponents([.hour, .minute, .second], from: slot.start)
+        let minuteOfDay = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+        let onTheGrid = minuteOfDay % minutes == 0 && (components.second ?? 0) == 0
+        guard !onTheGrid else { return slot }
 
-        let start = dayStart.addingTimeInterval(rounded)
+        let rounded = (minuteOfDay / minutes + 1) * minutes
+        // A repeated hour (fall-back) can resolve the rounded wall time to an
+        // instant at or before the slot's own start. Leaving the slot as it
+        // stands beats dropping a genuinely free stretch of the day.
+        guard let start = wallClock(minutes: rounded, on: slot.start, calendar: calendar),
+              start > slot.start
+        else { return slot }
+
         guard start < slot.end else { return nil }
         return TimeSlot(start: start, end: slot.end)
     }
