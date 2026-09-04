@@ -488,8 +488,8 @@ Each slot is a *maximal* gap, so its `durationMinutes` tells you how much room y
 | ------ | --------- | ------------- |
 | `--calendar` | *required* | Calendar ID or alias. Comma-separated for several (`work,personal`) — their events are merged into one busy view. |
 | `--duration` | `30` | Minimum usable slot length, in minutes. |
-| `--from` | now | Search start (ISO 8601). |
-| `--to` | `--days` after the start | Search end (ISO 8601). |
+| `--from` | now | Search start — ISO 8601 or shorthand (see [Date Format](#date-format)). |
+| `--to` | `--days` after the start | Search end — ISO 8601 or shorthand (see [Date Format](#date-format)). |
 | `--days` | `7` | How far ahead to search when `--to` is omitted. |
 | `--working-hours` | `09:00-17:00` | Daily window. `all` searches the whole day; overnight windows like `22:00-02:00` are supported. |
 | `--weekdays` | `weekdays` | `mon,wed,fri`, a range (`mon-fri`, `fri-mon` wraps), or `weekdays` / `weekends` / `all`. An overnight window belongs to the day it *opens*, so `--working-hours 22:00-02:00 --weekdays mon-fri` includes Friday 22:00 – Saturday 02:00. |
@@ -730,7 +730,8 @@ ekctl add reminder --list personal --title "Call the dentist" --due "fri 5pm"
 | Form | Example | Means |
 | ------ | --------- | ------- |
 | Now | `now` | The current instant |
-| Offset | `+90m`, `-2h`, `+3d`, `+1w` | From now. Units: `m`/`min`, `h`/`hr`, `d`/`day`, `w`/`week` |
+| Offset | `+90m`, `+3d`, `+1w` | From now. Units: `m`/`min`, `h`/`hr`, `d`/`day`, `w`/`week` |
+| Negative offset | `--from=-2h` | Same, backwards. Needs the `=` form — a bare `-2h` looks like a flag |
 | Named day | `today`, `tomorrow`, `yesterday` | Local midnight of that day |
 | Weekday | `fri`, `friday` | The next Friday, **today included** |
 | Qualified weekday | `next fri`, `last fri` | The next / previous Friday, **today excluded** |
@@ -740,7 +741,9 @@ ekctl add reminder --list personal --title "Call the dentist" --due "fri 5pm"
 | Named time | `noon`, `midnight` | |
 | Day + time | `tomorrow 3pm`, `next fri at 09:00`, `2026-02-01 14:30` | Any day above with any time above |
 
-Case doesn't matter, and `at` is optional filler. A bare day resolves to the *start* of that day, which is what `--from tomorrow` should mean.
+Case doesn't matter, and `at` is optional filler.
+
+A bare day resolves to the **start** of that day. That's what `--from tomorrow` should mean, but it applies just as much to the other flags: `--start tomorrow` creates a midnight event and `--due tomorrow` sets a midnight due date. Add a time — `--start "tomorrow 9am"` — whenever you mean a point in the day rather than its beginning.
 
 A bare number like `9` is **rejected**, not guessed — it could be 9am or the 9th, and being wrong there books a meeting three weeks out. Write `9am` or `09:00`. Months and years are not offset units for the same reason: `+3m` is unambiguously 3 minutes.
 
@@ -875,7 +878,7 @@ Common errors:
 
 - `Permission denied`: Grant access in System Settings → Privacy & Security → Calendars/Reminders
 - `Calendar not found`: Check calendar ID with `ekctl list calendars`
-- `Invalid date format`: Use ISO 8601 (e.g., `2026-01-15T09:00:00Z`, `+10:00`, or `+1000` offsets — see [Date Format](#date-format))
+- `Invalid --<flag> date format`: the message echoes the value it rejected. Use an ISO 8601 timestamp (`2026-01-15T09:00:00Z`, `+10:00` or `+1000` offsets) or a shorthand such as `tomorrow 9am` or `+2h` — see [Date Format](#date-format)
 
 Exit codes: `0` success, `1` failure, `2` permission denied, `64` invalid usage (bad flags/values).
 
