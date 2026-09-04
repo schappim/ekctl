@@ -55,14 +55,15 @@ public enum RelativeDates {
             return calendar.startOfDay(for: day)
         }
         // A time on its own is that time today.
-        if let minutes = timeOfDay(tokens.joined()) {
+        if let token = timeToken(tokens[...]), let minutes = timeOfDay(token) {
             return instant(minutesPastMidnight: minutes, on: now, calendar: calendar)
         }
         // Otherwise: a day phrase followed by a time.
         // Longest day phrase first, so "next friday 3pm" beats "next" alone.
         for split in stride(from: tokens.count - 1, through: 1, by: -1) {
             guard let day = day(Array(tokens[0..<split]), now: now, calendar: calendar),
-                  let minutes = timeOfDay(tokens[split...].joined())
+                  let token = timeToken(tokens[split...]),
+                  let minutes = timeOfDay(token)
             else { continue }
             return instant(minutesPastMidnight: minutes, on: day, calendar: calendar)
         }
@@ -82,10 +83,30 @@ public enum RelativeDates {
         guard !digits.isEmpty, let magnitude = Int(digits) else { return nil }
 
         let unit = String(body.dropFirst(digits.count))
-        guard let component = componentFor(unit) else { return nil }
+        guard let component = componentFor(unit), magnitude <= maximumMagnitude(for: component)
+        else { return nil }
 
         let value = sign == "-" ? -magnitude : magnitude
-        return calendar.date(byAdding: component, value: value, to: now)
+        guard let result = calendar.date(byAdding: component, value: value, to: now)
+        else { return nil }
+        // Foundation hands back an unmoved — or wildly overshot — date when it
+        // can't represent the result, so a garbled offset would silently read
+        // as "now" or flip its sign. Neither is an acceptable answer for a
+        // flag that schedules things.
+        guard value == 0 || (value > 0 ? result > now : result < now) else { return nil }
+        return result
+    }
+
+    /// Roughly a century in each unit. Beyond that an offset is a typo, and
+    /// resolving it to a date in year 5828963 helps nobody.
+    private static func maximumMagnitude(for component: Calendar.Component) -> Int {
+        switch component {
+        case .minute: return 100 * 366 * 24 * 60
+        case .hour: return 100 * 366 * 24
+        case .day: return 100 * 366
+        case .weekOfYear: return 100 * 53
+        default: return 0
+        }
     }
 
     private static func componentFor(_ unit: String) -> Calendar.Component? {
@@ -201,6 +222,21 @@ public enum RelativeDates {
 
     // MARK: - Times
 
+    /// The tokens that may make up a time. A lone `am`/`pm` is allowed to stand
+    /// apart ("3 pm"), but nothing else is glued together: joining freely turned
+    /// the fat-fingered "1 4:30" into 14:30 without a word.
+    static func timeToken(_ tokens: ArraySlice<String>) -> String? {
+        switch tokens.count {
+        case 1:
+            return tokens.first
+        case 2:
+            guard let last = tokens.last, last == "am" || last == "pm" else { return nil }
+            return tokens.joined()
+        default:
+            return nil
+        }
+    }
+
     /// `14:30`, `3pm`, `9:15am`, `noon`, `midnight` → minutes past midnight.
     /// A bare number is rejected as ambiguous.
     static func timeOfDay(_ token: String) -> Int? {
@@ -209,7 +245,9 @@ public enum RelativeDates {
 
         var body = token
         var meridiem: String?
-        for suffix in ["am", "pm"] where body.hasSuffix(suffix) {
+        // At most one — looping stripped "am" and then "pm" from "3pmam",
+        // accepting it as 3pm.
+        if let suffix = ["am", "pm"].first(where: { body.hasSuffix($0) }) {
             meridiem = suffix
             body = String(body.dropLast(2))
         }
@@ -218,11 +256,12 @@ public enum RelativeDates {
         guard (1...2).contains(parts.count) else { return nil }
         // Without am/pm, a bare number is ambiguous with a day of the month.
         guard parts.count == 2 || meridiem != nil else { return nil }
-        guard let hour = Int(parts[0]) else { return nil }
+        guard isAllDigits(parts[0]), let hour = Int(parts[0]) else { return nil }
 
         var minute = 0
         if parts.count == 2 {
-            guard parts[1].count == 2, let parsed = Int(parts[1]) else { return nil }
+            guard parts[1].count == 2, isAllDigits(parts[1]), let parsed = Int(parts[1])
+            else { return nil }
             minute = parsed
         }
         guard (0..<60).contains(minute) else { return nil }

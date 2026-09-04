@@ -2168,12 +2168,14 @@ final class RelativeDatesTests: XCTestCase {
         RelativeDates.parse(input, now: now, calendar: cal)
     }
 
-    /// "MM-dd HH:mm" in the pinned zone, so assertions read like a diary.
+    /// Full "yyyy-MM-dd HH:mm:ss" in the pinned zone. The year and seconds are
+    /// deliberately included: a narrower format let a result two thousand years
+    /// off, or one carrying stray seconds, match the expected string.
     private func stamp(_ date: Date?) -> String? {
         guard let date = date else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MM-dd HH:mm"
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         formatter.timeZone = cal.timeZone
         return formatter.string(from: date)
     }
@@ -2185,21 +2187,21 @@ final class RelativeDatesTests: XCTestCase {
     }
 
     func testMinuteHourDayAndWeekOffsets() {
-        XCTAssertEqual(stamp(parse("+90m")), "03-11 15:53")
-        XCTAssertEqual(stamp(parse("+2h")), "03-11 16:23")
-        XCTAssertEqual(stamp(parse("+3d")), "03-14 14:23")
-        XCTAssertEqual(stamp(parse("+1w")), "03-18 14:23")
+        XCTAssertEqual(stamp(parse("+90m")), "2026-03-11 15:53:00")
+        XCTAssertEqual(stamp(parse("+2h")), "2026-03-11 16:23:00")
+        XCTAssertEqual(stamp(parse("+3d")), "2026-03-14 14:23:00")
+        XCTAssertEqual(stamp(parse("+1w")), "2026-03-18 14:23:00")
     }
 
     func testNegativeOffsets() {
-        XCTAssertEqual(stamp(parse("-30m")), "03-11 13:53")
-        XCTAssertEqual(stamp(parse("-1d")), "03-10 14:23")
+        XCTAssertEqual(stamp(parse("-30m")), "2026-03-11 13:53:00")
+        XCTAssertEqual(stamp(parse("-1d")), "2026-03-10 14:23:00")
     }
 
     func testLongFormOffsetUnits() {
-        XCTAssertEqual(stamp(parse("+45minutes")), "03-11 15:08")
-        XCTAssertEqual(stamp(parse("+2hours")), "03-11 16:23")
-        XCTAssertEqual(stamp(parse("+2weeks")), "03-25 14:23")
+        XCTAssertEqual(stamp(parse("+45minutes")), "2026-03-11 15:08:00")
+        XCTAssertEqual(stamp(parse("+2hours")), "2026-03-11 16:23:00")
+        XCTAssertEqual(stamp(parse("+2weeks")), "2026-03-25 14:23:00")
     }
 
     func testOffsetsKeepTheClockAcrossDST() {
@@ -2224,44 +2226,44 @@ final class RelativeDatesTests: XCTestCase {
     // MARK: - Named days
 
     func testTodayTomorrowYesterday() {
-        XCTAssertEqual(stamp(parse("today")), "03-11 00:00")
-        XCTAssertEqual(stamp(parse("tomorrow")), "03-12 00:00")
-        XCTAssertEqual(stamp(parse("yesterday")), "03-10 00:00")
+        XCTAssertEqual(stamp(parse("today")), "2026-03-11 00:00:00")
+        XCTAssertEqual(stamp(parse("tomorrow")), "2026-03-12 00:00:00")
+        XCTAssertEqual(stamp(parse("yesterday")), "2026-03-10 00:00:00")
     }
 
     func testBareWeekdayIsTheNextOccurrence() {
-        XCTAssertEqual(stamp(parse("fri")), "03-13 00:00")
-        XCTAssertEqual(stamp(parse("friday")), "03-13 00:00")
+        XCTAssertEqual(stamp(parse("fri")), "2026-03-13 00:00:00")
+        XCTAssertEqual(stamp(parse("friday")), "2026-03-13 00:00:00")
         // Monday has already passed this week, so it's next week's.
-        XCTAssertEqual(stamp(parse("mon")), "03-16 00:00")
+        XCTAssertEqual(stamp(parse("mon")), "2026-03-16 00:00:00")
     }
 
     /// Said on a Wednesday, a bare "wed" means today — you don't mean a week
     /// away when you say "let's do it Wednesday" on Wednesday morning.
     func testBareWeekdayIncludesToday() {
-        XCTAssertEqual(stamp(parse("wed")), "03-11 00:00")
+        XCTAssertEqual(stamp(parse("wed")), "2026-03-11 00:00:00")
     }
 
     /// "next wednesday" on a Wednesday is the following one, though.
     func testNextWeekdayExcludesToday() {
-        XCTAssertEqual(stamp(parse("next wed")), "03-18 00:00")
-        XCTAssertEqual(stamp(parse("next fri")), "03-13 00:00")
+        XCTAssertEqual(stamp(parse("next wed")), "2026-03-18 00:00:00")
+        XCTAssertEqual(stamp(parse("next fri")), "2026-03-13 00:00:00")
     }
 
     func testLastWeekdayLooksBackwards() {
-        XCTAssertEqual(stamp(parse("last fri")), "03-06 00:00")
-        XCTAssertEqual(stamp(parse("last wed")), "03-04 00:00")
+        XCTAssertEqual(stamp(parse("last fri")), "2026-03-06 00:00:00")
+        XCTAssertEqual(stamp(parse("last wed")), "2026-03-04 00:00:00")
     }
 
     func testNextAndLastWeek() {
-        XCTAssertEqual(stamp(parse("next week")), "03-18 00:00")
-        XCTAssertEqual(stamp(parse("last week")), "03-04 00:00")
+        XCTAssertEqual(stamp(parse("next week")), "2026-03-18 00:00:00")
+        XCTAssertEqual(stamp(parse("last week")), "2026-03-04 00:00:00")
     }
 
     // MARK: - Plain dates
 
     func testPlainDateIsLocalMidnight() {
-        XCTAssertEqual(stamp(parse("2026-02-01")), "02-01 00:00")
+        XCTAssertEqual(stamp(parse("2026-02-01")), "2026-02-01 00:00:00")
     }
 
     func testRejectsImpossibleDates() {
@@ -2275,22 +2277,22 @@ final class RelativeDatesTests: XCTestCase {
     // MARK: - Times
 
     func testTwentyFourHourTimes() {
-        XCTAssertEqual(stamp(parse("14:30")), "03-11 14:30")
-        XCTAssertEqual(stamp(parse("09:00")), "03-11 09:00")
-        XCTAssertEqual(stamp(parse("00:00")), "03-11 00:00")
+        XCTAssertEqual(stamp(parse("14:30")), "2026-03-11 14:30:00")
+        XCTAssertEqual(stamp(parse("09:00")), "2026-03-11 09:00:00")
+        XCTAssertEqual(stamp(parse("00:00")), "2026-03-11 00:00:00")
     }
 
     func testTwelveHourTimes() {
-        XCTAssertEqual(stamp(parse("3pm")), "03-11 15:00")
-        XCTAssertEqual(stamp(parse("9am")), "03-11 09:00")
-        XCTAssertEqual(stamp(parse("9:15am")), "03-11 09:15")
-        XCTAssertEqual(stamp(parse("12pm")), "03-11 12:00")
-        XCTAssertEqual(stamp(parse("12am")), "03-11 00:00")
+        XCTAssertEqual(stamp(parse("3pm")), "2026-03-11 15:00:00")
+        XCTAssertEqual(stamp(parse("9am")), "2026-03-11 09:00:00")
+        XCTAssertEqual(stamp(parse("9:15am")), "2026-03-11 09:15:00")
+        XCTAssertEqual(stamp(parse("12pm")), "2026-03-11 12:00:00")
+        XCTAssertEqual(stamp(parse("12am")), "2026-03-11 00:00:00")
     }
 
     func testNoonAndMidnight() {
-        XCTAssertEqual(stamp(parse("noon")), "03-11 12:00")
-        XCTAssertEqual(stamp(parse("midnight")), "03-11 00:00")
+        XCTAssertEqual(stamp(parse("noon")), "2026-03-11 12:00:00")
+        XCTAssertEqual(stamp(parse("midnight")), "2026-03-11 00:00:00")
     }
 
     /// A bare number could be a time or a day of the month, and guessing wrong
@@ -2311,26 +2313,26 @@ final class RelativeDatesTests: XCTestCase {
     // MARK: - Day plus time
 
     func testDayAndTimeCombinations() {
-        XCTAssertEqual(stamp(parse("tomorrow 3pm")), "03-12 15:00")
-        XCTAssertEqual(stamp(parse("today 09:30")), "03-11 09:30")
-        XCTAssertEqual(stamp(parse("fri 17:00")), "03-13 17:00")
-        XCTAssertEqual(stamp(parse("2026-02-01 14:30")), "02-01 14:30")
-        XCTAssertEqual(stamp(parse("yesterday noon")), "03-10 12:00")
+        XCTAssertEqual(stamp(parse("tomorrow 3pm")), "2026-03-12 15:00:00")
+        XCTAssertEqual(stamp(parse("today 09:30")), "2026-03-11 09:30:00")
+        XCTAssertEqual(stamp(parse("fri 17:00")), "2026-03-13 17:00:00")
+        XCTAssertEqual(stamp(parse("2026-02-01 14:30")), "2026-02-01 14:30:00")
+        XCTAssertEqual(stamp(parse("yesterday noon")), "2026-03-10 12:00:00")
     }
 
     func testQualifiedDayAndTime() {
-        XCTAssertEqual(stamp(parse("next wed 08:00")), "03-18 08:00")
-        XCTAssertEqual(stamp(parse("last fri 5pm")), "03-06 17:00")
+        XCTAssertEqual(stamp(parse("next wed 08:00")), "2026-03-18 08:00:00")
+        XCTAssertEqual(stamp(parse("last fri 5pm")), "2026-03-06 17:00:00")
     }
 
     func testAtIsOptionalFiller() {
-        XCTAssertEqual(stamp(parse("tomorrow at 3pm")), "03-12 15:00")
-        XCTAssertEqual(stamp(parse("next fri at 09:00")), "03-13 09:00")
+        XCTAssertEqual(stamp(parse("tomorrow at 3pm")), "2026-03-12 15:00:00")
+        XCTAssertEqual(stamp(parse("next fri at 09:00")), "2026-03-13 09:00:00")
     }
 
     func testIsCaseInsensitiveAndWhitespaceTolerant() {
-        XCTAssertEqual(stamp(parse("TOMORROW 3PM")), "03-12 15:00")
-        XCTAssertEqual(stamp(parse("Next   Fri")), "03-13 00:00")
+        XCTAssertEqual(stamp(parse("TOMORROW 3PM")), "2026-03-12 15:00:00")
+        XCTAssertEqual(stamp(parse("Next   Fri")), "2026-03-13 00:00:00")
     }
 
     /// A time grafted onto a day is built from date components, so it means the
@@ -2342,8 +2344,55 @@ final class RelativeDatesTests: XCTestCase {
         let dayBeforeTransition = cal.date(from: components)!
         let parsed = RelativeDates.parse("tomorrow 09:00",
                                          now: dayBeforeTransition, calendar: cal)
-        XCTAssertEqual(stamp(parsed), "03-08 09:00")
+        XCTAssertEqual(stamp(parsed), "2026-03-08 09:00:00")
         XCTAssertEqual(cal.component(.hour, from: parsed!), 9)
+    }
+
+    // MARK: - Strictness
+
+    /// The meridiem is stripped once, not in a loop — "3pmam" used to lose
+    /// "am", then "pm", and parse as 3pm.
+    func testRejectsDoubledMeridiem() {
+        XCTAssertNil(parse("3pmam"))
+        XCTAssertNil(parse("3ampm"))
+        XCTAssertNil(parse("12pmam"))
+        XCTAssertNil(parse("tomorrow 3pmam"))
+    }
+
+    /// A lone am/pm may stand apart, but nothing else is glued together: the
+    /// fat-fingered "1 4:30" must not quietly become 14:30.
+    func testRejectsWhitespaceInsideATime() {
+        XCTAssertNil(parse("1 4:30"))
+        XCTAssertNil(parse("9 : 05"))
+        XCTAssertNil(parse("tomorrow 1 4:30"))
+    }
+
+    func testAllowsMeridiemAsItsOwnToken() {
+        XCTAssertEqual(stamp(parse("3 pm")), "2026-03-11 15:00:00")
+        XCTAssertEqual(stamp(parse("tomorrow 3 pm")), "2026-03-12 15:00:00")
+    }
+
+    /// `Int(_:)` accepts a leading sign and non-ASCII digits, so the components
+    /// are checked to be plain ASCII digits first.
+    func testRejectsSignedAndNonASCIITimeComponents() {
+        XCTAssertNil(parse("+3:30"))
+        XCTAssertNil(parse("-3:30"))
+        XCTAssertNil(parse("3:+0"))
+    }
+
+    /// A garbled magnitude must error rather than resolve to a date in year
+    /// 5828963 — or, when Foundation gives up, silently to "now".
+    func testRejectsAbsurdOffsetMagnitudes() {
+        XCTAssertNil(parse("+9223372036854775807d"))
+        XCTAssertNil(parse("+99999999999999999999d"))  // beyond Int
+        XCTAssertNil(parse("-10000000d"))
+        XCTAssertNil(parse("+99999w"))
+    }
+
+    func testAcceptsGenerousButSaneOffsets() {
+        XCTAssertNotNil(parse("+3650d"))   // ten years
+        XCTAssertNotNil(parse("+520w"))    // ten years
+        XCTAssertNotNil(parse("-3650d"))
     }
 
     // MARK: - Rejections
