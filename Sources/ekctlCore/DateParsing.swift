@@ -15,7 +15,8 @@ public enum DateParsing {
     /// One-line summary of accepted formats for help and error text, so the
     /// flags all describe themselves identically.
     public static let acceptedFormats =
-        "ISO 8601 (e.g., 2026-02-01T09:30:00Z, 2026-02-01T09:30:00+11:00, or 2026-02-01T09:30:00+1100)"
+        "ISO 8601 (e.g., 2026-02-01T09:30:00Z, 2026-02-01T09:30:00+11:00, or 2026-02-01T09:30:00+1100), "
+        + RelativeDates.acceptedFormats
 
     private static let formatters: [ISO8601DateFormatter] = {
         let base: ISO8601DateFormatter.Options = [
@@ -38,11 +39,23 @@ public enum DateParsing {
     }()
 
     public static func parse(_ string: String) -> Date? {
+        parse(string, now: Date(), calendar: .current)
+    }
+
+    /// Testable form: `now` and `calendar` anchor the shorthand grammar (see
+    /// `RelativeDates`) so it can be pinned to a fixed instant and zone.
+    ///
+    /// ISO 8601 is tried first and wins outright — every string that parsed
+    /// before this shorthand existed still parses to exactly the same instant.
+    public static func parse(_ string: String, now: Date, calendar: Calendar = .current) -> Date? {
+        let trimmed = string.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+
         for formatter in formatters {
-            if let date = formatter.date(from: string) {
+            if let date = formatter.date(from: trimmed) {
                 return date
             }
         }
-        return nil
+        return RelativeDates.parse(trimmed, now: now, calendar: calendar)
     }
 }

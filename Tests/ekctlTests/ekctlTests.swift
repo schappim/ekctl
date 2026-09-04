@@ -977,9 +977,21 @@ final class DateValidationTests: XCTestCase {
         XCTAssertNil(validateDate("March 5 2026"))
     }
 
-    func testDateOnlyWithoutTimeIsRejected() {
-        // Missing time component — ekctl requires full ISO8601 datetime
-        XCTAssertNil(validateDate("2026-03-05"))
+    /// Changed deliberately: a plain date used to be rejected for having no
+    /// time component. It now resolves to local midnight, which is what a range
+    /// endpoint like `--from 2026-03-05` should mean.
+    func testDateOnlyResolvesToLocalMidnight() {
+        let parsed = validateDate("2026-03-05")
+        XCTAssertNotNil(parsed)
+
+        let components = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second], from: parsed!)
+        XCTAssertEqual(components.year, 2026)
+        XCTAssertEqual(components.month, 3)
+        XCTAssertEqual(components.day, 5)
+        XCTAssertEqual(components.hour, 0)
+        XCTAssertEqual(components.minute, 0)
+        XCTAssertEqual(components.second, 0)
     }
 
     func testEmptyStringIsRejected() {
@@ -1340,11 +1352,17 @@ final class DateParsingTests: XCTestCase {
 
     // ── Rejected ──────────────────────────────────────────────────────────────
 
-    func testRejectsNonISOInput() {
+    func testRejectsInputThatIsNeitherISONorShorthand() {
         XCTAssertNil(DateParsing.parse("March 5 2026"))
         XCTAssertNil(DateParsing.parse("05/03/2026"))
         XCTAssertNil(DateParsing.parse(""))
-        XCTAssertNil(DateParsing.parse("2026-03-05"))  // date-only — no time
+        XCTAssertNil(DateParsing.parse("   "))
+    }
+
+    /// A plain date is now accepted as local midnight — see
+    /// `RelativeDatesTests` for the rest of the shorthand grammar.
+    func testAcceptsPlainDate() {
+        XCTAssertNotNil(DateParsing.parse("2026-03-05"))
     }
 
     // ── Round-trip: every form ekctl can emit is valid ekctl input ────────────
@@ -2119,5 +2137,257 @@ final class BlocksTimeTests: XCTestCase {
     /// — must not swallow the whole day.
     func testFreeAllDayEventDoesNotBlock() {
         XCTAssertFalse(blocks(.free, allDay: true))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Shorthand date grammar tests
+///
+/// `RelativeDates` is what lets every date flag take `tomorrow`, `fri 3pm` or
+/// `+2h` instead of a full ISO 8601 stamp. `now` and `calendar` are injected so
+/// every case below is pinned to a fixed instant — Wednesday 2026-03-11 14:23
+/// in America/New_York — rather than to whenever the suite happens to run.
+final class RelativeDatesTests: XCTestCase {
+
+    private var cal: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        return calendar
+    }
+
+    /// Wednesday 2026-03-11, 14:23 local.
+    private var now: Date {
+        var components = DateComponents()
+        components.year = 2026; components.month = 3; components.day = 11
+        components.hour = 14; components.minute = 23
+        return cal.date(from: components)!
+    }
+
+    private func parse(_ input: String) -> Date? {
+        RelativeDates.parse(input, now: now, calendar: cal)
+    }
+
+    /// "MM-dd HH:mm" in the pinned zone, so assertions read like a diary.
+    private func stamp(_ date: Date?) -> String? {
+        guard let date = date else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd HH:mm"
+        formatter.timeZone = cal.timeZone
+        return formatter.string(from: date)
+    }
+
+    // MARK: - now and offsets
+
+    func testNow() {
+        XCTAssertEqual(parse("now"), now)
+    }
+
+    func testMinuteHourDayAndWeekOffsets() {
+        XCTAssertEqual(stamp(parse("+90m")), "03-11 15:53")
+        XCTAssertEqual(stamp(parse("+2h")), "03-11 16:23")
+        XCTAssertEqual(stamp(parse("+3d")), "03-14 14:23")
+        XCTAssertEqual(stamp(parse("+1w")), "03-18 14:23")
+    }
+
+    func testNegativeOffsets() {
+        XCTAssertEqual(stamp(parse("-30m")), "03-11 13:53")
+        XCTAssertEqual(stamp(parse("-1d")), "03-10 14:23")
+    }
+
+    func testLongFormOffsetUnits() {
+        XCTAssertEqual(stamp(parse("+45minutes")), "03-11 15:08")
+        XCTAssertEqual(stamp(parse("+2hours")), "03-11 16:23")
+        XCTAssertEqual(stamp(parse("+2weeks")), "03-25 14:23")
+    }
+
+    func testOffsetsKeepTheClockAcrossDST() {
+        // 2026-03-08 is the local spring-forward day. Adding days must move the
+        // wall clock by whole days, not by 86 400-second blocks.
+        var components = DateComponents()
+        components.year = 2026; components.month = 3; components.day = 7
+        components.hour = 14; components.minute = 0
+        let beforeTransition = cal.date(from: components)!
+        let parsed = RelativeDates.parse("+2d", now: beforeTransition, calendar: cal)
+        XCTAssertEqual(cal.component(.hour, from: parsed!), 14)
+    }
+
+    func testRejectsMalformedOffsets() {
+        XCTAssertNil(parse("+3"))       // no unit
+        XCTAssertNil(parse("+d"))       // no magnitude
+        XCTAssertNil(parse("3d"))       // no sign — could be a time or a date
+        XCTAssertNil(parse("+3x"))      // unknown unit
+        XCTAssertNil(parse("+3mo"))     // months are deliberately unsupported
+    }
+
+    // MARK: - Named days
+
+    func testTodayTomorrowYesterday() {
+        XCTAssertEqual(stamp(parse("today")), "03-11 00:00")
+        XCTAssertEqual(stamp(parse("tomorrow")), "03-12 00:00")
+        XCTAssertEqual(stamp(parse("yesterday")), "03-10 00:00")
+    }
+
+    func testBareWeekdayIsTheNextOccurrence() {
+        XCTAssertEqual(stamp(parse("fri")), "03-13 00:00")
+        XCTAssertEqual(stamp(parse("friday")), "03-13 00:00")
+        // Monday has already passed this week, so it's next week's.
+        XCTAssertEqual(stamp(parse("mon")), "03-16 00:00")
+    }
+
+    /// Said on a Wednesday, a bare "wed" means today — you don't mean a week
+    /// away when you say "let's do it Wednesday" on Wednesday morning.
+    func testBareWeekdayIncludesToday() {
+        XCTAssertEqual(stamp(parse("wed")), "03-11 00:00")
+    }
+
+    /// "next wednesday" on a Wednesday is the following one, though.
+    func testNextWeekdayExcludesToday() {
+        XCTAssertEqual(stamp(parse("next wed")), "03-18 00:00")
+        XCTAssertEqual(stamp(parse("next fri")), "03-13 00:00")
+    }
+
+    func testLastWeekdayLooksBackwards() {
+        XCTAssertEqual(stamp(parse("last fri")), "03-06 00:00")
+        XCTAssertEqual(stamp(parse("last wed")), "03-04 00:00")
+    }
+
+    func testNextAndLastWeek() {
+        XCTAssertEqual(stamp(parse("next week")), "03-18 00:00")
+        XCTAssertEqual(stamp(parse("last week")), "03-04 00:00")
+    }
+
+    // MARK: - Plain dates
+
+    func testPlainDateIsLocalMidnight() {
+        XCTAssertEqual(stamp(parse("2026-02-01")), "02-01 00:00")
+    }
+
+    func testRejectsImpossibleDates() {
+        XCTAssertNil(parse("2026-02-31"))
+        XCTAssertNil(parse("2026-13-01"))
+        XCTAssertNil(parse("2026-00-10"))
+        XCTAssertNil(parse("26-02-01"))    // two-digit year
+        XCTAssertNil(parse("2026-2-1"))    // unpadded
+    }
+
+    // MARK: - Times
+
+    func testTwentyFourHourTimes() {
+        XCTAssertEqual(stamp(parse("14:30")), "03-11 14:30")
+        XCTAssertEqual(stamp(parse("09:00")), "03-11 09:00")
+        XCTAssertEqual(stamp(parse("00:00")), "03-11 00:00")
+    }
+
+    func testTwelveHourTimes() {
+        XCTAssertEqual(stamp(parse("3pm")), "03-11 15:00")
+        XCTAssertEqual(stamp(parse("9am")), "03-11 09:00")
+        XCTAssertEqual(stamp(parse("9:15am")), "03-11 09:15")
+        XCTAssertEqual(stamp(parse("12pm")), "03-11 12:00")
+        XCTAssertEqual(stamp(parse("12am")), "03-11 00:00")
+    }
+
+    func testNoonAndMidnight() {
+        XCTAssertEqual(stamp(parse("noon")), "03-11 12:00")
+        XCTAssertEqual(stamp(parse("midnight")), "03-11 00:00")
+    }
+
+    /// A bare number could be a time or a day of the month, and guessing wrong
+    /// books a meeting three weeks out. It must be rejected, not guessed.
+    func testRejectsBareNumberAsTime() {
+        XCTAssertNil(parse("9"))
+        XCTAssertNil(parse("14"))
+    }
+
+    func testRejectsOutOfRangeTimes() {
+        XCTAssertNil(parse("25:00"))
+        XCTAssertNil(parse("14:75"))
+        XCTAssertNil(parse("13pm"))
+        XCTAssertNil(parse("0am"))
+        XCTAssertNil(parse("9:5"))  // minutes must be two digits
+    }
+
+    // MARK: - Day plus time
+
+    func testDayAndTimeCombinations() {
+        XCTAssertEqual(stamp(parse("tomorrow 3pm")), "03-12 15:00")
+        XCTAssertEqual(stamp(parse("today 09:30")), "03-11 09:30")
+        XCTAssertEqual(stamp(parse("fri 17:00")), "03-13 17:00")
+        XCTAssertEqual(stamp(parse("2026-02-01 14:30")), "02-01 14:30")
+        XCTAssertEqual(stamp(parse("yesterday noon")), "03-10 12:00")
+    }
+
+    func testQualifiedDayAndTime() {
+        XCTAssertEqual(stamp(parse("next wed 08:00")), "03-18 08:00")
+        XCTAssertEqual(stamp(parse("last fri 5pm")), "03-06 17:00")
+    }
+
+    func testAtIsOptionalFiller() {
+        XCTAssertEqual(stamp(parse("tomorrow at 3pm")), "03-12 15:00")
+        XCTAssertEqual(stamp(parse("next fri at 09:00")), "03-13 09:00")
+    }
+
+    func testIsCaseInsensitiveAndWhitespaceTolerant() {
+        XCTAssertEqual(stamp(parse("TOMORROW 3PM")), "03-12 15:00")
+        XCTAssertEqual(stamp(parse("Next   Fri")), "03-13 00:00")
+    }
+
+    /// A time grafted onto a day is built from date components, so it means the
+    /// wall clock even on the day the clocks move.
+    func testTimeOnADSTTransitionDayIsWallClock() {
+        var components = DateComponents()
+        components.year = 2026; components.month = 3; components.day = 7
+        components.hour = 10
+        let dayBeforeTransition = cal.date(from: components)!
+        let parsed = RelativeDates.parse("tomorrow 09:00",
+                                         now: dayBeforeTransition, calendar: cal)
+        XCTAssertEqual(stamp(parsed), "03-08 09:00")
+        XCTAssertEqual(cal.component(.hour, from: parsed!), 9)
+    }
+
+    // MARK: - Rejections
+
+    func testRejectsUnknownWords() {
+        XCTAssertNil(parse("someday"))
+        XCTAssertNil(parse("next someday"))
+        XCTAssertNil(parse("soon 3pm"))
+        XCTAssertNil(parse("march 5 2026"))
+        XCTAssertNil(parse(""))
+        XCTAssertNil(parse("tomorrow 3pm extra"))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The shorthand must not disturb ISO 8601 parsing: `DateParsing` tries the
+/// strict formatters first, so every string that parsed before still parses to
+/// exactly the same instant.
+final class DateParsingShorthandIntegrationTests: XCTestCase {
+
+    private func fixedNow() -> Date { Date(timeIntervalSince1970: 1_773_246_180) }
+
+    func testISOInputStillWinsAndIsUnchanged() {
+        for iso in ["2026-03-09T16:00:00Z", "2026-03-09T16:00:00+11:00",
+                    "2026-03-09T16:00:00-0400", "2026-03-09T16:00:00.123Z"] {
+            let viaShorthandAwareParser = DateParsing.parse(iso, now: fixedNow())
+            XCTAssertNotNil(viaShorthandAwareParser, "should still parse: \(iso)")
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let strict = formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+            XCTAssertEqual(viaShorthandAwareParser, strict, "instant changed for: \(iso)")
+        }
+    }
+
+    func testShorthandReachesTheSharedParser() {
+        XCTAssertNotNil(DateParsing.parse("tomorrow", now: fixedNow()))
+        XCTAssertNotNil(DateParsing.parse("+2h", now: fixedNow()))
+        XCTAssertNotNil(DateParsing.parse("fri 3pm", now: fixedNow()))
+    }
+
+    func testAcceptedFormatsMentionsBothStyles() {
+        XCTAssertTrue(DateParsing.acceptedFormats.contains("ISO 8601"))
+        XCTAssertTrue(DateParsing.acceptedFormats.contains("tomorrow"))
     }
 }
