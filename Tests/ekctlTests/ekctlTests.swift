@@ -832,6 +832,28 @@ final class ConfigManagerTests: XCTestCase {
 
     // ── Config path ──────────────────────────────────────────────────────────
 
+    /// An unset shell variable reaches `--calendar` as an empty string and
+    /// resolves to *no* calendars. Commands must reject that rather than treat
+    /// it as a selection — `ekctl free` would otherwise report the entire
+    /// search window as open. Pinned here so the behaviour the guards depend on
+    /// can't change quietly.
+    func testResolveCalendarIDsYieldsNothingForEmptyInput() {
+        XCTAssertTrue(ConfigManager.resolveCalendarIDs("").isEmpty)
+        XCTAssertTrue(ConfigManager.resolveCalendarIDs(",").isEmpty)
+    }
+
+    /// Whitespace-only entries do survive as blank IDs rather than vanishing,
+    /// so they reach the calendar lookup and fail there with "Calendar not
+    /// found" — a different path from the empty-list guard, but still an error
+    /// rather than a silently empty selection.
+    func testResolveCalendarIDsKeepsBlankEntriesAsUnfindableIDs() {
+        XCTAssertEqual(ConfigManager.resolveCalendarIDs(" , "), ["", ""])
+    }
+
+    func testResolveCalendarIDsSplitsAndTrims() {
+        XCTAssertEqual(ConfigManager.resolveCalendarIDs("a, b ,c"), ["a", "b", "c"])
+    }
+
     func testConfigPathContainsEkctl() {
         XCTAssertTrue(ConfigManager.configPath().contains(".ekctl"))
     }

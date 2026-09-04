@@ -330,10 +330,25 @@ public class EventKitManager {
         limit: Int? = nil,
         ignoreAllDay: Bool = false
     ) -> JSONOutput {
+        // Reporting free time for no calendars would claim the whole window is
+        // open. The CLI rejects this earlier; guarded here too because the
+        // wrong answer is so much worse than the error.
+        guard !calendarIDs.isEmpty else {
+            return JSONOutput.error("No calendars given to search for free time.")
+        }
+
         var calendars: [EKCalendar] = []
         for id in calendarIDs {
             guard let calendar = eventStore.calendar(withIdentifier: id) else {
                 return JSONOutput.error("Calendar not found with ID: \(id)")
+            }
+            // `calendar(withIdentifier:)` also resolves Reminders lists. One of
+            // those holds no events, so it would contribute no busy time and
+            // the command would confidently report the window as free.
+            guard calendar.allowedEntityTypes.contains(.event) else {
+                return JSONOutput.error(
+                    "'\(calendar.title)' is a Reminders list, not an event calendar. "
+                        + "Run `ekctl list calendars` to find an event calendar.")
             }
             calendars.append(calendar)
         }

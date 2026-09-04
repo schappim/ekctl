@@ -1091,7 +1091,14 @@ struct Free: ParsableCommand {
             throw fail("The search range is empty: --to must be later than --from.")
         }
 
+        // An unset shell variable (`--calendar "$CAL"`) resolves to no
+        // calendars at all, and "no calendars are busy" would be reported as a
+        // completely free week — the most confidently wrong answer this command
+        // can give. Reject it here, before the permission prompt.
         let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
+        guard !calendarIDs.isEmpty else {
+            throw fail("--calendar must name at least one calendar ID or alias.")
+        }
 
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
