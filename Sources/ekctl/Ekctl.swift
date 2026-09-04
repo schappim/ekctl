@@ -11,8 +11,19 @@ import ekctlCore
 /// the message (e.g., "--from").
 private func parseDateOption(_ value: String, flag: String, format: OutputFormat) throws -> Date {
     guard let date = DateParsing.parse(value) else {
+        // Echo what was rejected — a script that built the value from a
+        // variable can't otherwise tell what reached the flag. A bare number is
+        // turned away on purpose, so explain that here rather than only in the
+        // README, which is not where the user is standing.
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        let hint = !trimmed.isEmpty && trimmed.allSatisfy(\.isNumber)
+            ? " A bare number is ambiguous — write a time as 9am or 09:00, "
+                + "or a date as 2026-02-09."
+            : ""
         print(
-            JSONOutput.error("Invalid \(flag) date format. Use \(DateParsing.acceptedFormats).")
+            JSONOutput.error(
+                "Invalid \(flag) date format. Got \"\(value)\".\(hint) "
+                    + "Use \(DateParsing.acceptedFormats).")
                 .format(format))
         throw ExitCode.failure
     }
