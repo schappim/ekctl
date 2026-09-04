@@ -1340,3 +1340,568 @@ final class DateParsingTests: XCTestCase {
         }
     }
 }
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// WorkingHours parsing tests
+///
+/// Backs `ekctl free --working-hours`. The parser is deliberately strict:
+/// a value it can't read must return nil so the CLI can reject it, rather
+/// than silently searching a window the user didn't ask for.
+final class WorkingHoursTests: XCTestCase {
+
+    func testParsesPaddedHHMMRange() {
+        let hours = WorkingHours.parse("09:00-17:00")
+        XCTAssertEqual(hours, WorkingHours(startMinutes: 540, endMinutes: 1020))
+    }
+
+    func testParsesBareHourRange() {
+        XCTAssertEqual(WorkingHours.parse("9-17"), WorkingHours(startMinutes: 540, endMinutes: 1020))
+    }
+
+    func testParsesMinutes() {
+        XCTAssertEqual(WorkingHours.parse("8:30-16:45"),
+                       WorkingHours(startMinutes: 510, endMinutes: 1005))
+    }
+
+    func testParsesSurroundingWhitespace() {
+        XCTAssertEqual(WorkingHours.parse("  09:00 - 17:00 "),
+                       WorkingHours(startMinutes: 540, endMinutes: 1020))
+    }
+
+    func testParsesAllDayKeywords() {
+        for keyword in ["all", "ALL", "any", "24h", "24", "always"] {
+            XCTAssertEqual(WorkingHours.parse(keyword), .allDay, "keyword: \(keyword)")
+            XCTAssertTrue(WorkingHours.parse(keyword)!.isFullDay)
+        }
+    }
+
+    func testOvernightRangeSpansMidnight() {
+        let hours = WorkingHours.parse("22:00-02:00")!
+        XCTAssertEqual(hours, WorkingHours(startMinutes: 1320, endMinutes: 120))
+        XCTAssertTrue(hours.spansMidnight)
+        XCTAssertFalse(hours.isFullDay)
+    }
+
+    func testEndOfDayIsNotTreatedAsOvernight() {
+        let hours = WorkingHours.parse("18:00-24:00")!
+        XCTAssertEqual(hours.endMinutes, 1440)
+        XCTAssertFalse(hours.spansMidnight)
+        XCTAssertFalse(hours.isFullDay)  // starts at 18:00, not midnight
+    }
+
+    func testMidnightToMidnightIsFullDay() {
+        XCTAssertTrue(WorkingHours.parse("00:00-24:00")!.isFullDay)
+    }
+
+    func testRejectsMalformedValues() {
+        for bad in ["", "9", "9-", "-17", "25:00-17:00", "09:60-17:00", "09:00-09:00",
+                    "abc-def", "9:00:00-17:00", "09:00-17:00-19:00"] {
+            XCTAssertNil(WorkingHours.parse(bad), "should reject: \(bad)")
+        }
+    }
+
+    func testStandardDefaultIsNineToFive() {
+        XCTAssertEqual(WorkingHours.standard, WorkingHours(startMinutes: 540, endMinutes: 1020))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Weekday parsing tests
+///
+/// Numbers match `Calendar.component(.weekday:)` — 1 = Sunday … 7 = Saturday —
+/// so the parsed set can be compared against a date without a lookup table.
+final class WeekdaysTests: XCTestCase {
+
+    func testParsesIndividualDays() {
+        XCTAssertEqual(Weekdays.parse("mon,wed,fri"), [2, 4, 6])
+    }
+
+    func testParsesLongDayNames() {
+        XCTAssertEqual(Weekdays.parse("monday,thursday"), [2, 5])
+    }
+
+    func testIsCaseAndWhitespaceInsensitive() {
+        XCTAssertEqual(Weekdays.parse(" MON , Tue "), [2, 3])
+    }
+
+    func testParsesKeywords() {
+        XCTAssertEqual(Weekdays.parse("weekdays"), Weekdays.monToFri)
+        XCTAssertEqual(Weekdays.parse("weekends"), Weekdays.weekend)
+        XCTAssertEqual(Weekdays.parse("all"), Weekdays.all)
+    }
+
+    func testParsesRange() {
+        XCTAssertEqual(Weekdays.parse("mon-fri"), Weekdays.monToFri)
+    }
+
+    func testRangeWrapsAroundEndOfWeek() {
+        // Fri, Sat, Sun, Mon
+        XCTAssertEqual(Weekdays.parse("fri-mon"), [6, 7, 1, 2])
+    }
+
+    func testSingleDayRangeIsThatDay() {
+        XCTAssertEqual(Weekdays.parse("wed-wed"), [4])
+    }
+
+    func testMixesKeywordsRangesAndDays() {
+        XCTAssertEqual(Weekdays.parse("weekends,mon-tue"), [1, 7, 2, 3])
+    }
+
+    func testRejectsUnknownDay() {
+        // A typo must not silently widen the search.
+        XCTAssertNil(Weekdays.parse("funday"))
+        XCTAssertNil(Weekdays.parse("mon,funday"))
+        XCTAssertNil(Weekdays.parse("mon-funday"))
+        XCTAssertNil(Weekdays.parse(""))
+    }
+
+    func testNameForWeekdayNumber() {
+        XCTAssertEqual(Weekdays.name(for: 1), "sunday")
+        XCTAssertEqual(Weekdays.name(for: 6), "friday")
+    }
+
+    /// The numbering has to agree with Foundation's, or the weekday filter
+    /// silently selects the wrong days.
+    func testNumbersMatchCalendarWeekdayComponent() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        var components = DateComponents()
+        components.year = 2026; components.month = 3; components.day = 9  // a Monday
+        let monday = cal.date(from: components)!
+        XCTAssertEqual(cal.component(.weekday, from: monday), Weekdays.parse("mon")!.first)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FreeBusy tests
+///
+/// The interval algebra behind `ekctl free`. Everything is pinned to
+/// America/New_York and explicit instants so the results don't move with the
+/// machine's clock or zone. March 2026 is used throughout because the 8th is
+/// the local spring-forward day, which the DST tests need.
+final class FreeBusyTests: XCTestCase {
+
+    private func calendar(in tzID: String = "America/New_York") -> Calendar {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: tzID)!
+        return cal
+    }
+
+    private func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int, _ min: Int,
+                      in cal: Calendar) -> Date {
+        var components = DateComponents()
+        components.year = y; components.month = m; components.day = d
+        components.hour = h; components.minute = min
+        return cal.date(from: components)!
+    }
+
+    /// A slot on 2026-03-11 (a Wednesday), from wallclock hour:minute pairs.
+    private func slot(_ startHour: Int, _ startMinute: Int,
+                      _ endHour: Int, _ endMinute: Int,
+                      day: Int = 11, in cal: Calendar) -> TimeSlot {
+        TimeSlot(start: date(2026, 3, day, startHour, startMinute, in: cal),
+                 end: date(2026, 3, day, endHour, endMinute, in: cal))
+    }
+
+    /// "HH:mm" rendering of a slot's edges, so assertions read like a diary.
+    private func wallclock(_ slot: TimeSlot, in cal: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd HH:mm"
+        formatter.timeZone = cal.timeZone
+        return "\(formatter.string(from: slot.start))–\(formatter.string(from: slot.end))"
+    }
+
+    // MARK: - TimeSlot
+
+    func testDurationMinutesRoundsDown() {
+        let cal = calendar()
+        let start = date(2026, 3, 11, 9, 0, in: cal)
+        XCTAssertEqual(TimeSlot(start: start, end: start.addingTimeInterval(1799)).durationMinutes, 29)
+        XCTAssertEqual(TimeSlot(start: start, end: start.addingTimeInterval(1800)).durationMinutes, 30)
+    }
+
+    func testIsEmptyForZeroAndNegativeLength() {
+        let cal = calendar()
+        let instant = date(2026, 3, 11, 9, 0, in: cal)
+        XCTAssertTrue(TimeSlot(start: instant, end: instant).isEmpty)
+        XCTAssertTrue(TimeSlot(start: instant, end: instant.addingTimeInterval(-60)).isEmpty)
+        XCTAssertFalse(TimeSlot(start: instant, end: instant.addingTimeInterval(60)).isEmpty)
+    }
+
+    // MARK: - merge
+
+    func testMergeCoalescesOverlappingIntervals() {
+        let cal = calendar()
+        let merged = FreeBusy.merge([slot(9, 0, 10, 30, in: cal), slot(10, 0, 11, 0, in: cal)])
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(wallclock(merged[0], in: cal), "03-11 09:00–03-11 11:00")
+    }
+
+    func testMergeCoalescesTouchingIntervals() {
+        let cal = calendar()
+        let merged = FreeBusy.merge([slot(9, 0, 10, 0, in: cal), slot(10, 0, 11, 0, in: cal)])
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(wallclock(merged[0], in: cal), "03-11 09:00–03-11 11:00")
+    }
+
+    func testMergeKeepsDisjointIntervals() {
+        let cal = calendar()
+        let merged = FreeBusy.merge([slot(9, 0, 10, 0, in: cal), slot(11, 0, 12, 0, in: cal)])
+        XCTAssertEqual(merged.count, 2)
+    }
+
+    func testMergeSortsUnorderedInput() {
+        let cal = calendar()
+        let merged = FreeBusy.merge([slot(14, 0, 15, 0, in: cal), slot(9, 0, 10, 0, in: cal)])
+        XCTAssertEqual(merged.map { wallclock($0, in: cal) },
+                       ["03-11 09:00–03-11 10:00", "03-11 14:00–03-11 15:00"])
+    }
+
+    /// A short meeting fully inside a long one must not extend it — the naive
+    /// "take the latest end" bug would shrink the busy block.
+    func testMergeAbsorbsFullyContainedInterval() {
+        let cal = calendar()
+        let merged = FreeBusy.merge([slot(9, 0, 17, 0, in: cal), slot(10, 0, 11, 0, in: cal)])
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(wallclock(merged[0], in: cal), "03-11 09:00–03-11 17:00")
+    }
+
+    func testMergeDropsZeroLengthIntervals() {
+        let cal = calendar()
+        XCTAssertEqual(FreeBusy.merge([slot(9, 0, 9, 0, in: cal)]).count, 0)
+    }
+
+    func testMergeOfEmptyInputIsEmpty() {
+        XCTAssertTrue(FreeBusy.merge([]).isEmpty)
+    }
+
+    // MARK: - expand (buffer)
+
+    func testExpandPadsBothSides() {
+        let cal = calendar()
+        let expanded = FreeBusy.expand([slot(10, 0, 11, 0, in: cal)], byMinutes: 15)
+        XCTAssertEqual(wallclock(expanded[0], in: cal), "03-11 09:45–03-11 11:15")
+    }
+
+    func testExpandByZeroIsIdentity() {
+        let cal = calendar()
+        let original = [slot(10, 0, 11, 0, in: cal)]
+        XCTAssertEqual(FreeBusy.expand(original, byMinutes: 0), original)
+        XCTAssertEqual(FreeBusy.expand(original, byMinutes: -5), original)
+    }
+
+    // MARK: - subtract
+
+    func testSubtractNothingReturnsWholeWindow() {
+        let cal = calendar()
+        let window = slot(9, 0, 17, 0, in: cal)
+        XCTAssertEqual(FreeBusy.subtract([], from: window), [window])
+    }
+
+    func testSubtractCarvesGapsAroundMeetings() {
+        let cal = calendar()
+        let free = FreeBusy.subtract(
+            FreeBusy.merge([slot(10, 0, 11, 0, in: cal), slot(13, 0, 14, 0, in: cal)]),
+            from: slot(9, 0, 17, 0, in: cal))
+        XCTAssertEqual(free.map { wallclock($0, in: cal) }, [
+            "03-11 09:00–03-11 10:00",
+            "03-11 11:00–03-11 13:00",
+            "03-11 14:00–03-11 17:00",
+        ])
+    }
+
+    func testSubtractFullyBookedWindowLeavesNothing() {
+        let cal = calendar()
+        XCTAssertTrue(FreeBusy.subtract([slot(8, 0, 18, 0, in: cal)],
+                                        from: slot(9, 0, 17, 0, in: cal)).isEmpty)
+    }
+
+    func testSubtractClipsMeetingsOverhangingTheWindow() {
+        let cal = calendar()
+        let free = FreeBusy.subtract([slot(8, 0, 10, 0, in: cal), slot(16, 0, 18, 0, in: cal)],
+                                     from: slot(9, 0, 17, 0, in: cal))
+        XCTAssertEqual(free.map { wallclock($0, in: cal) }, ["03-11 10:00–03-11 16:00"])
+    }
+
+    func testSubtractIgnoresMeetingsOutsideTheWindow() {
+        let cal = calendar()
+        let window = slot(9, 0, 17, 0, in: cal)
+        let free = FreeBusy.subtract([slot(6, 0, 7, 0, in: cal), slot(19, 0, 20, 0, in: cal)],
+                                     from: window)
+        XCTAssertEqual(free, [window])
+    }
+
+    func testSubtractFromEmptyWindowIsEmpty() {
+        let cal = calendar()
+        XCTAssertTrue(FreeBusy.subtract([], from: slot(9, 0, 9, 0, in: cal)).isEmpty)
+    }
+
+    // MARK: - windows
+
+    func testWindowsProduceOneWindowPerMatchingDay() {
+        let cal = calendar()
+        // Mon 2026-03-09 through Sun 2026-03-15.
+        let windows = FreeBusy.windows(from: date(2026, 3, 9, 0, 0, in: cal),
+                                       to: date(2026, 3, 16, 0, 0, in: cal),
+                                       workingHours: .standard,
+                                       weekdays: Weekdays.monToFri,
+                                       calendar: cal)
+        XCTAssertEqual(windows.count, 5)
+        XCTAssertEqual(wallclock(windows[0], in: cal), "03-09 09:00–03-09 17:00")
+        XCTAssertEqual(wallclock(windows[4], in: cal), "03-13 09:00–03-13 17:00")
+    }
+
+    func testWindowsClipToTheSearchRange() {
+        let cal = calendar()
+        // Starting mid-morning: the first window opens at "now", not 09:00.
+        let windows = FreeBusy.windows(from: date(2026, 3, 11, 11, 30, in: cal),
+                                       to: date(2026, 3, 11, 15, 0, in: cal),
+                                       workingHours: .standard,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows.map { wallclock($0, in: cal) }, ["03-11 11:30–03-11 15:00"])
+    }
+
+    func testWindowsSkipDaysAlreadyPastTheirWorkingHours() {
+        let cal = calendar()
+        let windows = FreeBusy.windows(from: date(2026, 3, 11, 19, 0, in: cal),
+                                       to: date(2026, 3, 12, 12, 0, in: cal),
+                                       workingHours: .standard,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows.map { wallclock($0, in: cal) }, ["03-12 09:00–03-12 12:00"])
+    }
+
+    func testWindowsForFullDayHoursCoverWholeDays() {
+        let cal = calendar()
+        let windows = FreeBusy.windows(from: date(2026, 3, 11, 0, 0, in: cal),
+                                       to: date(2026, 3, 13, 0, 0, in: cal),
+                                       workingHours: .allDay,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows.map { wallclock($0, in: cal) },
+                       ["03-11 00:00–03-12 00:00", "03-12 00:00–03-13 00:00"])
+    }
+
+    /// An overnight window that opened *before* the search range still counts
+    /// for the part that falls inside it.
+    func testWindowsHandleOvernightHours() {
+        let cal = calendar()
+        let windows = FreeBusy.windows(from: date(2026, 3, 2, 0, 0, in: cal),
+                                       to: date(2026, 3, 4, 0, 0, in: cal),
+                                       workingHours: WorkingHours.parse("22:00-02:00")!,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows.map { wallclock($0, in: cal) }, [
+            "03-02 00:00–03-02 02:00",  // tail of Sunday night's window
+            "03-02 22:00–03-03 02:00",
+            "03-03 22:00–03-04 00:00",  // clipped by the range end
+        ])
+    }
+
+    func testWindowsAreEmptyForInvertedRange() {
+        let cal = calendar()
+        XCTAssertTrue(FreeBusy.windows(from: date(2026, 3, 12, 0, 0, in: cal),
+                                       to: date(2026, 3, 11, 0, 0, in: cal),
+                                       calendar: cal).isEmpty)
+    }
+
+    func testWindowsAreEmptyWhenNoWeekdaysSelected() {
+        let cal = calendar()
+        XCTAssertTrue(FreeBusy.windows(from: date(2026, 3, 9, 0, 0, in: cal),
+                                       to: date(2026, 3, 16, 0, 0, in: cal),
+                                       weekdays: [],
+                                       calendar: cal).isEmpty)
+    }
+
+    /// 2026-03-08 is the local spring-forward day (02:00 → 03:00). Building the
+    /// window by adding 540 minutes to midnight would land at 10:00; wall-clock
+    /// resolution keeps it at 09:00.
+    func testWindowsHonourWallClockAcrossSpringForward() {
+        let cal = calendar()
+        let windows = FreeBusy.windows(from: date(2026, 3, 8, 0, 0, in: cal),
+                                       to: date(2026, 3, 9, 0, 0, in: cal),
+                                       workingHours: .standard,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows.count, 1)
+        XCTAssertEqual(cal.component(.hour, from: windows[0].start), 9)
+        XCTAssertEqual(cal.component(.hour, from: windows[0].end), 17)
+    }
+
+    /// The short day really is 23 hours long — a full-day window must reflect
+    /// that rather than assuming 86 400 seconds.
+    func testFullDayWindowIsShortOnSpringForward() {
+        let cal = calendar()
+        let windows = FreeBusy.windows(from: date(2026, 3, 8, 0, 0, in: cal),
+                                       to: date(2026, 3, 9, 0, 0, in: cal),
+                                       workingHours: .allDay,
+                                       weekdays: Weekdays.all,
+                                       calendar: cal)
+        XCTAssertEqual(windows[0].end.timeIntervalSince(windows[0].start), 23 * 3600, accuracy: 1)
+    }
+
+    // MARK: - roundStartUp
+
+    func testRoundStartUpMovesToNextQuarterHour() {
+        let cal = calendar()
+        let rounded = FreeBusy.roundStartUp(slot(10, 7, 12, 0, in: cal),
+                                            toMultipleOfMinutes: 15, calendar: cal)
+        XCTAssertEqual(wallclock(rounded!, in: cal), "03-11 10:15–03-11 12:00")
+    }
+
+    func testRoundStartUpLeavesAlignedStartsAlone() {
+        let cal = calendar()
+        let aligned = slot(10, 30, 12, 0, in: cal)
+        XCTAssertEqual(FreeBusy.roundStartUp(aligned, toMultipleOfMinutes: 30, calendar: cal), aligned)
+    }
+
+    func testRoundStartUpByZeroIsIdentity() {
+        let cal = calendar()
+        let original = slot(10, 7, 12, 0, in: cal)
+        XCTAssertEqual(FreeBusy.roundStartUp(original, toMultipleOfMinutes: 0, calendar: cal), original)
+    }
+
+    func testRoundStartUpDropsSlotItWouldConsume() {
+        let cal = calendar()
+        XCTAssertNil(FreeBusy.roundStartUp(slot(10, 50, 10, 55, in: cal),
+                                           toMultipleOfMinutes: 60, calendar: cal))
+    }
+
+    // MARK: - slots (end to end)
+
+    func testSlotsFindsGapsAroundADayOfMeetings() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(10, 0, 11, 0, in: cal), slot(13, 0, 14, 0, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            minimumDurationMinutes: 30,
+            calendar: cal)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, [
+            "03-11 09:00–03-11 10:00",
+            "03-11 11:00–03-11 13:00",
+            "03-11 14:00–03-11 17:00",
+        ])
+        XCTAssertEqual(found.map(\.durationMinutes), [60, 120, 180])
+    }
+
+    func testSlotsDropsGapsShorterThanTheRequestedDuration() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(10, 0, 11, 0, in: cal), slot(13, 0, 14, 0, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            minimumDurationMinutes: 90,
+            calendar: cal)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, [
+            "03-11 11:00–03-11 13:00",
+            "03-11 14:00–03-11 17:00",
+        ])
+    }
+
+    func testSlotsAppliesBufferAroundMeetings() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(10, 0, 11, 0, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            minimumDurationMinutes: 15,
+            bufferMinutes: 15,
+            calendar: cal)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, [
+            "03-11 09:00–03-11 09:45",
+            "03-11 11:15–03-11 17:00",
+        ])
+    }
+
+    func testSlotsRoundsStartsWhenAsked() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(10, 0, 10, 20, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            minimumDurationMinutes: 30,
+            roundToMinutes: 30,
+            calendar: cal)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, [
+            "03-11 09:00–03-11 10:00",
+            "03-11 10:30–03-11 17:00",
+        ])
+    }
+
+    func testSlotsStopsAtTheLimit() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [],
+            from: date(2026, 3, 9, 0, 0, in: cal),
+            to: date(2026, 3, 16, 0, 0, in: cal),
+            weekdays: Weekdays.monToFri,
+            minimumDurationMinutes: 30,
+            limit: 2,
+            calendar: cal)
+        XCTAssertEqual(found.count, 2)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, [
+            "03-09 09:00–03-09 17:00",
+            "03-10 09:00–03-10 17:00",
+        ])
+    }
+
+    func testSlotsIgnoresMeetingsOutsideWorkingHours() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(6, 0, 8, 0, in: cal), slot(19, 0, 21, 0, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            calendar: cal)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, ["03-11 09:00–03-11 17:00"])
+    }
+
+    func testSlotsSkipsNonSelectedWeekdays() {
+        let cal = calendar()
+        // Sat 2026-03-14 and Sun 2026-03-15 only.
+        let found = FreeBusy.slots(
+            busy: [],
+            from: date(2026, 3, 14, 0, 0, in: cal),
+            to: date(2026, 3, 16, 0, 0, in: cal),
+            weekdays: Weekdays.monToFri,
+            calendar: cal)
+        XCTAssertTrue(found.isEmpty)
+    }
+
+    /// Overlapping meetings across two calendars must not produce a phantom
+    /// gap between them.
+    func testSlotsHandlesOverlappingMeetingsFromSeveralCalendars() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(10, 0, 12, 0, in: cal), slot(11, 0, 13, 0, in: cal), slot(10, 30, 11, 30, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            minimumDurationMinutes: 30,
+            calendar: cal)
+        XCTAssertEqual(found.map { wallclock($0, in: cal) }, [
+            "03-11 09:00–03-11 10:00",
+            "03-11 13:00–03-11 17:00",
+        ])
+    }
+
+    func testSlotsAreEmptyWhenEveryDayIsFullyBooked() {
+        let cal = calendar()
+        let found = FreeBusy.slots(
+            busy: [slot(0, 0, 23, 59, in: cal)],
+            from: date(2026, 3, 11, 0, 0, in: cal),
+            to: date(2026, 3, 12, 0, 0, in: cal),
+            weekdays: Weekdays.all,
+            calendar: cal)
+        XCTAssertTrue(found.isEmpty)
+    }
+}
