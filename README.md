@@ -30,7 +30,7 @@ Every release ships a prebuilt universal (Apple Silicon + Intel) binary —
 pick the latest from the [releases page](https://github.com/schappim/ekctl/releases):
 
 ```bash
-curl -L -o ekctl.tar.gz https://github.com/schappim/ekctl/releases/download/v1.6.0/ekctl-v1.6.0.tar.gz
+curl -L -o ekctl.tar.gz https://github.com/schappim/ekctl/releases/download/v1.7.0/ekctl-v1.7.0.tar.gz
 tar -xzf ekctl.tar.gz
 xattr -d com.apple.quarantine ekctl   # release binaries are ad-hoc signed, not notarized
 sudo mv ekctl /usr/local/bin/
