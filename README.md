@@ -452,19 +452,19 @@ ekctl free --calendar work --duration 30
 
 ```json
 {
-  "count": 3,
-  "durationMinutes": 30,
+  "count": 2,
+  "minimumDurationMinutes": 30,
   "slots": [
     {
-      "start": "2026-09-07T09:00:00+10:00",
-      "end": "2026-09-07T10:00:00+10:00",
+      "startDate": "2026-09-07T09:00:00+10:00",
+      "endDate": "2026-09-07T10:00:00+10:00",
       "durationMinutes": 60,
       "date": "2026-09-07",
       "weekday": "monday"
     },
     {
-      "start": "2026-09-07T11:00:00+10:00",
-      "end": "2026-09-07T13:00:00+10:00",
+      "startDate": "2026-09-07T11:00:00+10:00",
+      "endDate": "2026-09-07T13:00:00+10:00",
       "durationMinutes": 120,
       "date": "2026-09-07",
       "weekday": "monday"
@@ -479,7 +479,7 @@ ekctl free --calendar work --duration 30
 }
 ```
 
-Each slot is a *maximal* gap, so `durationMinutes` tells you how much room you actually have — `--duration` is the minimum a gap must reach to be reported, not the size of the slot returned. Slots come back in chronological order.
+Each slot is a *maximal* gap, so its `durationMinutes` tells you how much room you actually have — `--duration` is the minimum a gap must reach to be reported, not the size of the slot returned, and it's echoed back at the top level as `minimumDurationMinutes`. Slots come back in chronological order, and use the same `startDate` / `endDate` field names as events.
 
 ### Options
 
@@ -491,7 +491,7 @@ Each slot is a *maximal* gap, so `durationMinutes` tells you how much room you a
 | `--to` | `--days` after the start | Search end (ISO 8601). |
 | `--days` | `7` | How far ahead to search when `--to` is omitted. |
 | `--working-hours` | `09:00-17:00` | Daily window. `all` searches the whole day; overnight windows like `22:00-02:00` are supported. |
-| `--weekdays` | `weekdays` | `mon,wed,fri`, a range (`mon-fri`, `fri-mon` wraps), or `weekdays` / `weekends` / `all`. |
+| `--weekdays` | `weekdays` | `mon,wed,fri`, a range (`mon-fri`, `fri-mon` wraps), or `weekdays` / `weekends` / `all`. An overnight window belongs to the day it *opens*, so `--working-hours 22:00-02:00 --weekdays mon-fri` includes Friday 22:00 – Saturday 02:00. |
 | `--buffer` | `0` | Minutes to leave either side of every meeting, so back-to-back slots aren't proposed. |
 | `--round` | `0` | Round slot starts up to the next multiple of N minutes (e.g. `15`), instead of whenever the previous meeting ended. |
 | `--limit` | `20` | Maximum slots to return. |
@@ -527,7 +527,7 @@ ekctl free --calendar work --duration 45 --format text
 The earliest workable start time, as a one-liner:
 
 ```bash
-ekctl free --calendar work --duration 30 --limit 1 | jq -r '.slots[0].start'
+ekctl free --calendar work --duration 30 --limit 1 | jq -r '.slots[0].startDate'
 ```
 
 Slots are a first-class row type in CSV and text output, the same as events and reminders:
@@ -804,13 +804,21 @@ Nested objects flatten to dot-notated columns (e.g., `calendar.id`, `calendar.ti
 ```bash
 # --time-format compact so jq's strptime can read the offset (see Date Format)
 SLOT=$(ekctl free --calendar work --duration 30 --limit 1 --time-format compact)
-START=$(echo "$SLOT" | jq -r '.slots[0].start')
-END=$(echo "$SLOT" | jq -r '.slots[0].start
+START=$(echo "$SLOT" | jq -r '.slots[0].startDate')
+END=$(echo "$SLOT" | jq -r '.slots[0].startDate as $s | $s
   | strptime("%Y-%m-%dT%H:%M:%S%z") | mktime + 1800
-  | strftime("%Y-%m-%dT%H:%M:%SZ")')
+  | strftime("%Y-%m-%dT%H:%M:%S") + $s[19:]')
 
 ekctl add event --calendar work --title "Focus block" --start "$START" --end "$END"
 ```
+
+`+ $s[19:]` re-attaches the slot's own UTC offset. Don't be tempted to write
+`strftime("%Y-%m-%dT%H:%M:%SZ")` instead: jq's `strptime` hands back *local*
+wall-clock fields and `mktime` reads them back as UTC, so labelling the result
+`Z` books an event wrong by your whole UTC offset — a 30-minute focus block
+becomes ten and a half hours in Sydney, and ends before it starts in New York.
+This recipe relies on ekctl rendering timestamps in your machine's own zone; it
+isn't a general-purpose converter for timestamps from elsewhere.
 
 ### Human-readable plain text
 

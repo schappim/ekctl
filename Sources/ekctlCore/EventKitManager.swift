@@ -383,10 +383,13 @@ public class EventKitManager {
         let formatter = localDateFormatter
         let dayFormatter = localDayFormatter
         let calendar = Calendar.current
+        // `startDate`/`endDate` rather than `start`/`end`: slot rows sit
+        // alongside event and reminder rows in CSV and jq pipelines, and those
+        // already use the longer names.
         let slotDicts: [[String: Any]] = slots.map { slot in
             [
-                "start": formatter.string(from: slot.start),
-                "end": formatter.string(from: slot.end),
+                "startDate": formatter.string(from: slot.start),
+                "endDate": formatter.string(from: slot.end),
                 "durationMinutes": slot.durationMinutes,
                 "date": dayFormatter.string(from: slot.start),
                 "weekday": Weekdays.name(for: calendar.component(.weekday, from: slot.start)),
@@ -396,7 +399,9 @@ public class EventKitManager {
         return JSONOutput.success([
             "slots": slotDicts,
             "count": slotDicts.count,
-            "durationMinutes": durationMinutes,
+            // Named for what it is — the filter that was applied — so it can't
+            // be mistaken for the length of the slot in a single-slot response.
+            "minimumDurationMinutes": durationMinutes,
             "searchedFrom": formatter.string(from: startDate),
             "searchedTo": formatter.string(from: endDate),
             "workingHours": workingHours.formatted,

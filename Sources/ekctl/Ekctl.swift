@@ -1031,7 +1031,10 @@ struct Free: ParsableCommand {
     )
     var workingHours: String = "09:00-17:00"
 
-    @Option(name: .long, help: "Days to consider: \(Weekdays.acceptedFormats).")
+    @Option(
+        name: .long,
+        help: "Days to consider: \(Weekdays.acceptedFormats). An overnight window belongs to the day it opens, so 22:00-02:00 with mon-fri includes Friday night into Saturday morning."
+    )
     var weekdays: String = "weekdays"
 
     @Option(
