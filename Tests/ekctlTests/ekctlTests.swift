@@ -1905,3 +1905,81 @@ final class FreeBusyTests: XCTestCase {
         XCTAssertTrue(found.isEmpty)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Blocking-rule tests
+///
+/// `EventKitManager.blocksTime` decides which events eat into the slots
+/// `ekctl free` reports — the highest-consequence judgement in the feature.
+/// It takes plain values rather than an `EKEvent` precisely so it can be
+/// exercised here: an `EKEvent` built outside a store can't hold an
+/// availability, and its `status` and attendees are read-only.
+final class BlocksTimeTests: XCTestCase {
+
+    private func blocks(_ availability: EKEventAvailability,
+                        allDay: Bool = false,
+                        status: EKEventStatus = .confirmed,
+                        declined: Bool = false,
+                        ignoreAllDay: Bool = false) -> Bool {
+        EventKitManager.blocksTime(
+            availability: availability,
+            isAllDay: allDay,
+            status: status,
+            currentUserDeclined: declined,
+            ignoreAllDay: ignoreAllDay)
+    }
+
+    func testBusyEventBlocks() {
+        XCTAssertTrue(blocks(.busy))
+    }
+
+    func testFreeEventDoesNotBlock() {
+        XCTAssertFalse(blocks(.free))
+    }
+
+    /// Tentative and unavailable are still commitments on the calendar — only
+    /// an explicit "free" releases the time.
+    func testTentativeAndUnavailableBlock() {
+        XCTAssertTrue(blocks(.tentative))
+        XCTAssertTrue(blocks(.unavailable))
+    }
+
+    /// Calendars that don't support availability report `notSupported`. Those
+    /// events are real, so they must block rather than vanish.
+    func testNotSupportedAvailabilityBlocks() {
+        XCTAssertTrue(blocks(.notSupported))
+    }
+
+    func testCancelledEventDoesNotBlock() {
+        XCTAssertFalse(blocks(.busy, status: .canceled))
+    }
+
+    func testTentativeStatusStillBlocks() {
+        XCTAssertTrue(blocks(.busy, status: .tentative))
+        XCTAssertTrue(blocks(.busy, status: .none))
+    }
+
+    /// A meeting the user declined is not a commitment.
+    func testDeclinedInvitationDoesNotBlock() {
+        XCTAssertFalse(blocks(.busy, declined: true))
+    }
+
+    func testBusyAllDayEventBlocksByDefault() {
+        XCTAssertTrue(blocks(.busy, allDay: true))
+    }
+
+    func testIgnoreAllDayDropsAllDayEvents() {
+        XCTAssertFalse(blocks(.busy, allDay: true, ignoreAllDay: true))
+    }
+
+    func testIgnoreAllDayLeavesTimedEventsAlone() {
+        XCTAssertTrue(blocks(.busy, ignoreAllDay: true))
+    }
+
+    /// A free all-day event — the usual shape of a birthday or holiday banner
+    /// — must not swallow the whole day.
+    func testFreeAllDayEventDoesNotBlock() {
+        XCTAssertFalse(blocks(.free, allDay: true))
+    }
+}

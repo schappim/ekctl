@@ -390,19 +390,36 @@ public class EventKitManager {
         ])
     }
 
-    /// Whether an event occupies time for free-slot purposes. Split out from
-    /// `findFreeSlots` so the rule has one home: not marked free, not
-    /// cancelled, not declined by the user, and (optionally) not all-day.
-    static func blocksTime(_ event: EKEvent, ignoreAllDay: Bool) -> Bool {
-        if ignoreAllDay && event.isAllDay { return false }
-        if event.availability == .free { return false }
-        if event.status == .canceled { return false }
-        if let attendees = event.attendees,
-           let me = attendees.first(where: { $0.isCurrentUser }),
-           me.participantStatus == .declined {
-            return false
-        }
+    /// Whether an event occupies time for free-slot purposes, expressed over
+    /// plain values rather than an `EKEvent` so the rule can be unit-tested
+    /// without a live store (an in-memory `EKEvent` can't even hold an
+    /// availability — that lives on its calendar).
+    ///
+    /// The rule: an event blocks its time unless the user has already said
+    /// otherwise — marked it free, had it cancelled, or declined the invite.
+    public static func blocksTime(availability: EKEventAvailability,
+                                  isAllDay: Bool,
+                                  status: EKEventStatus,
+                                  currentUserDeclined: Bool,
+                                  ignoreAllDay: Bool) -> Bool {
+        if ignoreAllDay && isAllDay { return false }
+        if availability == .free { return false }
+        if status == .canceled { return false }
+        if currentUserDeclined { return false }
         return true
+    }
+
+    /// Adapter from a live `EKEvent` onto the rule above.
+    static func blocksTime(_ event: EKEvent, ignoreAllDay: Bool) -> Bool {
+        let declined = event.attendees?.contains {
+            $0.isCurrentUser && $0.participantStatus == .declined
+        } ?? false
+        return blocksTime(
+            availability: event.availability,
+            isAllDay: event.isAllDay,
+            status: event.status,
+            currentUserDeclined: declined,
+            ignoreAllDay: ignoreAllDay)
     }
 
     /// Shows details of a specific event
