@@ -30,6 +30,189 @@ private func parseDateOption(_ value: String, flag: String, format: OutputFormat
     return date
 }
 
+/// Prints a command's result and, if it's an error, fails the command, so
+/// the exit code agrees with the `status` in the output.
+private func emit(_ result: JSONOutput, format: OutputFormat) throws {
+    print(result.format(format))
+    if result.isError { throw ExitCode.failure }
+}
+
+/// Parses an alarm-list flag via `AlarmParsing`, printing the standard error
+/// payload in the requested output format and failing the command if any
+/// entry is invalid. `flag` names the offending option in the message.
+private func parseAlarmsOption(_ value: String?, flag: String, format: OutputFormat) throws -> [Double]? {
+    do {
+        return try AlarmParsing.parse(value)
+    } catch {
+        print(JSONOutput.error("Invalid \(flag) value. \(error)").format(format))
+        throw ExitCode.failure
+    }
+}
+
+/// `--travel-time` in whole minutes, as seconds for EventKit. Garbage used to
+/// be dropped without a word, leaving the user to discover later that the
+/// travel time they asked for was never set.
+private func parseTravelTimeOption(_ value: String?, format: OutputFormat) throws -> TimeInterval? {
+    guard let value = value else { return nil }
+    guard let minutes = Int(value.trimmingCharacters(in: .whitespaces)), (0...1440).contains(minutes) else {
+        print(
+            JSONOutput.error(
+                "Invalid --travel-time value. Got \"\(value)\". Use whole minutes from 0 to 1440, e.g. 30.")
+                .format(format))
+        throw ExitCode.failure
+    }
+    return TimeInterval(minutes * 60)
+}
+
+/// `--color` as a hex colour, checked before anything is created or changed.
+/// An unreadable value used to be ignored, so `calendar create --color
+/// garbage` made a calendar in the default colour and reported success.
+private func parseColorOption(_ value: String?, format: OutputFormat) throws -> String? {
+    guard let value = value else { return nil }
+    let hex = value.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "#", with: "")
+    guard hex.count == 6, hex.allSatisfy(\.isHexDigit) else {
+        print(
+            JSONOutput.error("Invalid --color value. Got \"\(value)\". Use a hex colour such as #FF5500.")
+                .format(format))
+        throw ExitCode.failure
+    }
+    return value
+}
+
+/// Resolves an optional `--calendar` selection. Omitted means every event
+/// calendar (nil). Given but naming nothing — an unset shell variable, say —
+/// is an error rather than quietly widening to every calendar.
+private func parseCalendarSelection(_ value: String?, format: OutputFormat) throws -> [String]? {
+    guard let value = value else { return nil }
+    // A blank entry inside a list ("work,$UNSET") stays in as an unfindable
+    // ID so it fails loudly, as in `free`; see `resolveCalendarIDs`.
+    let ids = ConfigManager.resolveCalendarIDs(value)
+    guard !ids.isEmpty else {
+        print(
+            JSONOutput.error(
+                "--calendar was given but names no calendar. Omit it to use every calendar, "
+                    + "or pass an ID or alias.")
+                .format(format))
+        throw ExitCode.failure
+    }
+    return ids
+}
+
+/// The `--recurrence-*` flags shared by `add event` and `update event`.
+struct RecurrenceOptions: ParsableArguments {
+    @Option(
+        name: .long,
+        help: "Recurrence frequency (\(RecurrenceParsing.frequencyValues)). On update, 'none' removes the recurrence.")
+    var recurrenceFrequency: String?
+
+    @Option(name: .long, help: "Recurrence interval, e.g. 2 for every other week (default: 1).")
+    var recurrenceInterval: String?
+
+    @Option(name: .long, help: "End the recurrence after this many occurrences.")
+    var recurrenceEndCount: String?
+
+    @Option(
+        name: .long,
+        help: "End the recurrence on this date, in \(DateParsing.acceptedFormats). On update, 'none' makes it open-ended.")
+    var recurrenceEndDate: String?
+
+    // `.unconditional` on the lists that take negative values: without it a
+    // value such as `-1fri` looks like a flag and has to be written
+    // `--recurrence-days=-1fri`.
+    @Option(
+        name: .long, parsing: .unconditional,
+        help: "Days of week (e.g., 'mon,tue', '1mon' for 1st Monday, '-1fri' for last Friday).")
+    var recurrenceDays: String?
+
+    @Option(name: .long, help: "Months of the year (comma-separated: 1-12 or jan,feb...).")
+    var recurrenceMonths: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Days of the month (comma-separated: 1-31 or -1 for last).")
+    var recurrenceDaysOfMonth: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Weeks of the year (comma-separated: 1-53 or -1 for last).")
+    var recurrenceWeeksOfYear: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Days of the year (comma-separated: 1-366 or -1 for last).")
+    var recurrenceDaysOfYear: String?
+
+    @Option(name: .long, parsing: .unconditional, help: "Set positions (comma-separated: 1 for 1st, -1 for last, etc.).")
+    var recurrenceSetPositions: String?
+
+    /// Parses and validates the flags, printing the error and failing the
+    /// command on bad input — before the permission prompt, like dates.
+    func spec(forUpdate: Bool, format: OutputFormat) throws -> RecurrenceSpec {
+        func fail(_ message: String) -> Error {
+            print(JSONOutput.error(message).format(format))
+            return ExitCode.failure
+        }
+        // An empty value is the flag left unset, as it always was on `add
+        // event`: scripts pass "$VAR" whether or not it's set.
+        func given(_ value: String?) -> String? {
+            guard let value = value, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            return value
+        }
+        var endDate: Date?
+        var clearEndDate = false
+        if let value = given(recurrenceEndDate) {
+            if forUpdate && value.trimmingCharacters(in: .whitespaces).lowercased() == "none" {
+                clearEndDate = true
+            } else {
+                endDate = try parseDateOption(value, flag: "--recurrence-end-date", format: format)
+                // EventKit ends a series at an instant, so a bare date (local
+                // midnight) would leave that day's occurrence out. "Ends on
+                // 1 December" includes 1 December, as in Calendar.
+                if let date = endDate, Calendar.current.startOfDay(for: date) == date {
+                    endDate = Calendar.current.date(byAdding: DateComponents(day: 1, second: -1), to: date)
+                }
+            }
+        }
+        let spec: RecurrenceSpec
+        do {
+            spec = try RecurrenceParsing.parse(
+                frequency: given(recurrenceFrequency),
+                interval: given(recurrenceInterval),
+                endCount: given(recurrenceEndCount),
+                endDate: endDate,
+                clearEndDate: clearEndDate,
+                days: given(recurrenceDays),
+                months: given(recurrenceMonths),
+                daysOfMonth: given(recurrenceDaysOfMonth),
+                weeksOfYear: given(recurrenceWeeksOfYear),
+                daysOfYear: given(recurrenceDaysOfYear),
+                setPositions: given(recurrenceSetPositions),
+                allowNone: forUpdate)
+        } catch {
+            throw fail("\(error)")
+        }
+        // A new event has no rule for these to modify, so they need a
+        // frequency; an update may be adjusting the event's existing rule,
+        // which only the store can tell us about.
+        if !forUpdate && spec.frequency == nil && spec.hasRuleDetails {
+            throw fail("--recurrence-* flags need --recurrence-frequency to say how often the event repeats.")
+        }
+        if spec.frequency != nil {
+            do { try spec.validate(against: spec) } catch { throw fail("\(error)") }
+        }
+        return spec
+    }
+}
+
+/// `--occurrence`, which picks one occurrence of a recurring series.
+private func parseOccurrenceOption(_ value: String?, format: OutputFormat) throws -> Date? {
+    try value.map { try parseDateOption($0, flag: "--occurrence", format: format) }
+}
+
+private let occurrenceHelp: ArgumentHelp = """
+    For a recurring event, which occurrence: its start time (the startDate shown by list events) \
+    or its occurrenceDate. Every occurrence shares one ID.
+    """
+
+private let spanHelp: ArgumentHelp = """
+    For a recurring event: this (just the occurrence), future (it and every later one), or all \
+    (the whole series).
+    """
+
 // MARK: - Main Command
 
 @main
@@ -43,6 +226,7 @@ struct Ekctl: ParsableCommand {
             List.self, Show.self, Add.self, Update.self, Delete.self, Complete.self, Alias.self,
             CalendarCmd.self,
             Today.self, Tomorrow.self, Next.self, Free.self,
+            InitCommand.self,
         ],
         defaultSubcommand: List.self
     )
@@ -69,28 +253,31 @@ struct ListCalendars: ParsableCommand {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.all, format: outputFormat.format)
         let result = manager.listCalendars()
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
 struct ListEvents: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "events",
-        abstract: "List events in a calendar within a date range."
+        abstract: "List events within a date range (default: today and the 6 days after it)."
     )
 
     @Option(
         name: .long,
         help:
-            "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal). Each event's source calendar is reported in its JSON output."
+            "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal). Omit for every calendar. Each event's source calendar is reported in its JSON output."
     )
-    var calendar: String
+    var calendar: String?
 
-    @Option(name: .long, help: "Start date in \(DateParsing.acceptedFormats).")
-    var from: String
+    @Option(name: .long, help: "Start date in \(DateParsing.acceptedFormats). Defaults to the start of today.")
+    var from: String?
 
-    @Option(name: .long, help: "End date in \(DateParsing.acceptedFormats).")
-    var to: String
+    @Option(name: .long, help: "End date in \(DateParsing.acceptedFormats). Defaults to --days after the start.")
+    var to: String?
+
+    @Option(name: .long, help: "How many days to list when --to is omitted (default: 7).")
+    var days: Int?
 
     @Option(
         name: .long,
@@ -108,9 +295,26 @@ struct ListEvents: ParsableCommand {
 
     func run() throws {
         // Validate arguments before triggering the TCC permission prompt.
-        let startDate = try parseDateOption(from, flag: "--from", format: outputFormat.format)
-        let endDate = try parseDateOption(to, flag: "--to", format: outputFormat.format)
-        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
+        func fail(_ message: String) -> Error {
+            print(JSONOutput.error(message).format(outputFormat.format))
+            return ExitCode.failure
+        }
+        if let days = days {
+            guard to == nil else { throw fail("Pass --to or --days, not both.") }
+            // A century is far beyond any useful listing, and keeps the date
+            // arithmetic clear of overflow.
+            guard (1...36_500).contains(days) else { throw fail("--days must be from 1 to 36500.") }
+        }
+        let startDate = try from.map {
+            try parseDateOption($0, flag: "--from", format: outputFormat.format)
+        } ?? DateRanges.today().start
+        let endDate = try to.map {
+            try parseDateOption($0, flag: "--to", format: outputFormat.format)
+        } ?? DateRanges.nextWindow(now: startDate, days: days ?? 7).end
+        // Equal bounds are an empty range, as they always were; reversed ones
+        // are a mistake worth saying so about.
+        guard startDate <= endDate else { throw fail("--to is earlier than --from.") }
+        let calendarIDs = try parseCalendarSelection(calendar, format: outputFormat.format)
 
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
@@ -121,7 +325,7 @@ struct ListEvents: ParsableCommand {
             to: endDate,
             search: search,
             availability: availability)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -150,7 +354,7 @@ struct ListReminders: ParsableCommand {
         try manager.requestAccess(.reminders, format: outputFormat.format)
         let listID = ConfigManager.resolveAlias(list)
         let result = manager.listReminders(listID: listID, completed: completed, search: search)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -172,13 +376,17 @@ struct ShowEvent: ParsableCommand {
     @Argument(help: "The event ID to show.")
     var eventID: String
 
+    @Option(name: .long, help: occurrenceHelp)
+    var occurrence: String?
+
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
+        let occurrenceDate = try parseOccurrenceOption(occurrence, format: outputFormat.format)
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
-        let result = manager.showEvent(eventID: eventID)
-        print(result.format(outputFormat.format))
+        let result = manager.showEvent(eventID: eventID, occurrence: occurrenceDate)
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -197,7 +405,7 @@ struct ShowReminder: ParsableCommand {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.showReminder(reminderID: reminderID)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -216,8 +424,8 @@ struct AddEvent: ParsableCommand {
         abstract: "Create a new calendar event."
     )
 
-    @Option(name: .long, help: "The calendar ID or alias.")
-    var calendar: String
+    @Option(name: .long, help: "The calendar ID or alias. Defaults to the calendar Calendar.app uses for new events.")
+    var calendar: String?
 
     @Option(name: .long, help: "The event title.")
     var title: String
@@ -239,37 +447,7 @@ struct AddEvent: ParsableCommand {
 
     // MARK: - Recurrence & Travel Time
 
-    @Option(name: .long, help: "Recurrence frequency (daily, weekly, monthly).")
-    var recurrenceFrequency: String?
-
-    @Option(name: .long, help: "Recurrence interval (default: 1).")
-    var recurrenceInterval: String?
-
-    @Option(name: .long, help: "Recurrence end count.")
-    var recurrenceEndCount: String?
-
-    @Option(name: .long, help: "Recurrence end date in \(DateParsing.acceptedFormats).")
-    var recurrenceEndDate: String?
-
-    @Option(
-        name: .long,
-        help: "Days of week (e.g., 'mon,tue', '1mon' for 1st Monday, '-1fri' for last Friday).")
-    var recurrenceDays: String?
-
-    @Option(name: .long, help: "Months of the year (comma-separated: 1-12 or jan,feb...).")
-    var recurrenceMonths: String?
-
-    @Option(name: .long, help: "Days of the month (comma-separated: 1-31 or -1 for last).")
-    var recurrenceDaysOfMonth: String?
-
-    @Option(name: .long, help: "Weeks of the year (comma-separated: 1-53 or -1 for last).")
-    var recurrenceWeeksOfYear: String?
-
-    @Option(name: .long, help: "Days of the year (comma-separated: 1-366 or -1 for last).")
-    var recurrenceDaysOfYear: String?
-
-    @Option(name: .long, help: "Set positions (comma-separated: 1 for 1st, -1 for last, etc.).")
-    var recurrenceSetPositions: String?
+    @OptionGroup var recurrence: RecurrenceOptions
 
     @Option(name: .long, help: "Travel time in minutes.")
     var travelTime: String?
@@ -277,9 +455,8 @@ struct AddEvent: ParsableCommand {
     // MARK: - New Features (Alarms, Availability, URL, etc.)
 
     @Option(
-        name: .long,
-        help:
-            "Alarms in minutes. Positive numbers mean minutes before (e.g., 10). Prefix '+' for minutes after (e.g., +10). Negative numbers are accepted."
+        name: .long, parsing: .unconditional,
+        help: "Alarms relative to the start: \(AlarmParsing.acceptedFormats)."
     )
     var alarms: String?
 
@@ -296,51 +473,13 @@ struct AddEvent: ParsableCommand {
         let startDate = try parseDateOption(start, flag: "--start", format: outputFormat.format)
         let endDate = try parseDateOption(end, flag: "--end", format: outputFormat.format)
 
-        var rEndDate: Date?
-        if let recEndDateString = recurrenceEndDate, !recEndDateString.isEmpty {
-            rEndDate = try parseDateOption(
-                recEndDateString, flag: "--recurrence-end-date", format: outputFormat.format)
-        }
+        let recurrenceSpec = try recurrence.spec(forUpdate: false, format: outputFormat.format)
 
-        // Parse recurrence interval (default to 1)
-        let recurrenceIntervalInt = (recurrenceInterval.flatMap(Int.init)) ?? 1
+        let travelTimeSeconds = try parseTravelTimeOption(travelTime, format: outputFormat.format)
 
-        let recurrenceEndCountInt = recurrenceEndCount.flatMap(Int.init)
-
-        // Convert travel time to seconds if provided and valid
-        var travelTimeSeconds: TimeInterval?
-        if let ttString = travelTime, let ttInt = Int(ttString) {
-            travelTimeSeconds = TimeInterval(ttInt * 60)
-        }
-
-        // Helper to parse comma-separated integers
-        func parseInts(_ string: String?) -> [NSNumber]? {
-            guard let string = string else { return nil }
-            return string.split(separator: ",").compactMap {
-                Int($0.trimmingCharacters(in: .whitespaces)).map { NSNumber(value: $0) }
-            }
-        }
-
-        // Helper to parse months (names or numbers)
-        func parseMonths(_ string: String?) -> [NSNumber]? {
-            guard let string = string else { return nil }
-            let monthMap: [String: Int] = [
-                "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
-                "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6,
-                "jul": 7, "july": 7, "aug": 8, "august": 8, "sep": 9, "september": 9,
-                "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
-            ]
-
-            return string.split(separator: ",").compactMap { component in
-                let trimmed = component.trimmingCharacters(in: .whitespaces).lowercased()
-                if let val = Int(trimmed) { return NSNumber(value: val) }
-                if let val = monthMap[trimmed] { return NSNumber(value: val) }
-                return nil
-            }
-        }
-
-        let alarmsList = AlarmParsing.parse(alarms)
-        let calendarID = ConfigManager.resolveAlias(calendar)
+        let alarmsList = try parseAlarmsOption(alarms, flag: "--alarms", format: outputFormat.format)
+            .map(AlarmParsing.dedupe)
+        let calendarID = calendar.map(ConfigManager.resolveAlias)
 
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
@@ -352,22 +491,13 @@ struct AddEvent: ParsableCommand {
             location: location,
             notes: notes,
             allDay: allDay,
-            recurrenceFrequency: recurrenceFrequency,
-            recurrenceInterval: recurrenceIntervalInt,
-            recurrenceEndCount: recurrenceEndCountInt,
-            recurrenceEndDate: rEndDate,
-            recurrenceDays: recurrenceDays,
-            recurrenceMonths: parseMonths(recurrenceMonths),
-            recurrenceDaysOfMonth: parseInts(recurrenceDaysOfMonth),
-            recurrenceWeeksOfYear: parseInts(recurrenceWeeksOfYear),
-            recurrenceDaysOfYear: parseInts(recurrenceDaysOfYear),
-            recurrenceSetPositions: parseInts(recurrenceSetPositions),
+            recurrence: recurrenceSpec,
             travelTime: travelTimeSeconds,
             alarms: alarmsList,
             url: url,
             availability: availability
         )
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -426,7 +556,7 @@ struct AddReminder: ParsableCommand {
             priority: priorityInt,
             notes: notes
         )
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -447,6 +577,17 @@ struct UpdateEvent: ParsableCommand {
 
     @Argument(help: "The event ID to update.")
     var eventID: String
+
+    @Option(name: .long, help: occurrenceHelp)
+    var occurrence: String?
+
+    @Option(name: .long, help: spanHelp)
+    var span: EventSpan = .this
+
+    @Option(
+        name: .long,
+        help: "Move the event to this calendar (ID or alias). A recurring series can only move as a whole: pass --span all.")
+    var calendar: String?
 
     @Option(name: .long, help: "New title.")
     var title: String?
@@ -475,13 +616,26 @@ struct UpdateEvent: ParsableCommand {
     @Option(name: .long, help: "Travel time in minutes.")
     var travelTime: String?
 
-    @Option(name: .long, help: "Alarms relative to start (minutes). Replaces existing alarms.")
+    @Option(
+        name: .long, parsing: .unconditional,
+        help: "Alarms relative to the start, replacing any existing ones: \(AlarmParsing.acceptedFormats)."
+    )
     var alarms: String?
+
+    @Option(
+        name: .long, parsing: .unconditional,
+        help: "Alarms to add, keeping the existing ones (same format as --alarms). An alarm already on the event isn't added twice."
+    )
+    var addAlarms: String?
+
+    @OptionGroup var recurrence: RecurrenceOptions
 
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
         // Validate arguments before triggering the TCC permission prompt.
+        let occurrenceDate = try parseOccurrenceOption(occurrence, format: outputFormat.format)
+        let recurrenceSpec = try recurrence.spec(forUpdate: true, format: outputFormat.format)
         var startDate: Date?
         if let start = start {
             startDate = try parseDateOption(start, flag: "--start", format: outputFormat.format)
@@ -491,17 +645,33 @@ struct UpdateEvent: ParsableCommand {
             endDate = try parseDateOption(end, flag: "--end", format: outputFormat.format)
         }
 
-        let alarmsList = AlarmParsing.parse(alarms)
-
-        var travelTimeSeconds: TimeInterval?
-        if let ttString = travelTime, let ttInt = Int(ttString) {
-            travelTimeSeconds = TimeInterval(ttInt * 60)
+        let alarmsList = try parseAlarmsOption(alarms, flag: "--alarms", format: outputFormat.format)
+            .map(AlarmParsing.dedupe)
+        let addAlarmsList = try parseAlarmsOption(addAlarms, flag: "--add-alarms", format: outputFormat.format)
+            .map(AlarmParsing.dedupe)
+        if addAlarmsList?.isEmpty == true {
+            print(
+                JSONOutput.error(
+                    "--add-alarms needs at least one alarm to add. To remove every alarm, use --alarms none.")
+                    .format(outputFormat.format))
+            throw ExitCode.failure
         }
+        if alarmsList != nil && addAlarmsList != nil {
+            print(
+                JSONOutput.error(
+                    "Pass --alarms (replace every alarm) or --add-alarms (keep them and add more), not both.")
+                    .format(outputFormat.format))
+            throw ExitCode.failure
+        }
+
+        let travelTimeSeconds = try parseTravelTimeOption(travelTime, format: outputFormat.format)
 
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
         let result = manager.updateEvent(
             eventID: eventID,
+            occurrence: occurrenceDate,
+            span: span,
             title: title,
             startDate: startDate,
             endDate: endDate,
@@ -511,9 +681,12 @@ struct UpdateEvent: ParsableCommand {
             url: url,
             availability: availability,
             travelTime: travelTimeSeconds,
-            alarms: alarmsList
+            alarms: alarmsList,
+            addAlarms: addAlarmsList,
+            calendarID: calendar.map(ConfigManager.resolveAlias),
+            recurrence: recurrenceSpec
         )
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -572,7 +745,7 @@ struct UpdateReminder: ParsableCommand {
             notes: notes,
             completed: completed
         )
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -601,10 +774,11 @@ struct CreateCalendar: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
+        let color = try parseColorOption(color, format: outputFormat.format)
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
         let result = manager.createCalendar(title: title, color: color)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -626,12 +800,13 @@ struct UpdateCalendar: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
+        let color = try parseColorOption(color, format: outputFormat.format)
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         // .all: the ID may name an event calendar or a reminder list.
         try manager.requestAccess(.all, format: outputFormat.format)
         let resolvedID = ConfigManager.resolveAlias(calendarID)
         let result = manager.updateCalendar(calendarID: resolvedID, title: title, color: color)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -653,7 +828,7 @@ struct DeleteCalendar: ParsableCommand {
         // Resolve alias if needed
         let resolvedID = ConfigManager.resolveAlias(calendarID)
         let result = manager.deleteCalendar(calendarID: resolvedID)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -675,13 +850,20 @@ struct DeleteEvent: ParsableCommand {
     @Argument(help: "The event ID to delete.")
     var eventID: String
 
+    @Option(name: .long, help: occurrenceHelp)
+    var occurrence: String?
+
+    @Option(name: .long, help: spanHelp)
+    var span: EventSpan = .this
+
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
+        let occurrenceDate = try parseOccurrenceOption(occurrence, format: outputFormat.format)
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
-        let result = manager.deleteEvent(eventID: eventID)
-        print(result.format(outputFormat.format))
+        let result = manager.deleteEvent(eventID: eventID, occurrence: occurrenceDate, span: span)
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -700,7 +882,7 @@ struct DeleteReminder: ParsableCommand {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.deleteReminder(reminderID: reminderID)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -728,7 +910,7 @@ struct CompleteReminder: ParsableCommand {
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.reminders, format: outputFormat.format)
         let result = manager.completeReminder(reminderID: reminderID)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -847,9 +1029,9 @@ struct Today: ParsableCommand {
 
     @Option(
         name: .long,
-        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal)."
+        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal). Omit for every calendar."
     )
-    var calendar: String
+    var calendar: String?
 
     @Option(
         name: .long,
@@ -866,11 +1048,11 @@ struct Today: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
+        let calendarIDs = try parseCalendarSelection(calendar, format: outputFormat.format)
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
 
         let (start, end) = DateRanges.today()
-        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
@@ -878,7 +1060,7 @@ struct Today: ParsableCommand {
             to: end,
             search: search,
             availability: availability)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -890,9 +1072,9 @@ struct Tomorrow: ParsableCommand {
 
     @Option(
         name: .long,
-        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal)."
+        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal). Omit for every calendar."
     )
-    var calendar: String
+    var calendar: String?
 
     @Option(
         name: .long,
@@ -909,11 +1091,11 @@ struct Tomorrow: ParsableCommand {
     @OptionGroup var outputFormat: OutputFormatOptions
 
     func run() throws {
+        let calendarIDs = try parseCalendarSelection(calendar, format: outputFormat.format)
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
 
         let (start, end) = DateRanges.tomorrow()
-        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
@@ -921,7 +1103,7 @@ struct Tomorrow: ParsableCommand {
             to: end,
             search: search,
             availability: availability)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -933,9 +1115,9 @@ struct Next: ParsableCommand {
 
     @Option(
         name: .long,
-        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal)."
+        help: "Calendar ID or alias. Pass multiple comma-separated values to fetch events from several calendars (e.g., work,personal). Omit for every calendar."
     )
-    var calendar: String
+    var calendar: String?
 
     @Option(
         name: .long,
@@ -974,11 +1156,11 @@ struct Next: ParsableCommand {
             throw ExitCode.failure
         }
 
+        let calendarIDs = try parseCalendarSelection(calendar, format: outputFormat.format)
         let manager = EventKitManager(timeFormat: outputFormat.timeFormat)
         try manager.requestAccess(.events, format: outputFormat.format)
 
         let (start, end) = DateRanges.nextWindow(days: days)
-        let calendarIDs = ConfigManager.resolveCalendarIDs(calendar)
 
         let result = manager.listEvents(
             calendarIDs: calendarIDs,
@@ -988,7 +1170,7 @@ struct Next: ParsableCommand {
             availability: availability,
             sortedByStartAscending: true,
             limit: count)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }
 
@@ -1128,6 +1310,6 @@ struct Free: ParsableCommand {
             roundToMinutes: round,
             limit: limit,
             ignoreAllDay: ignoreAllDay)
-        print(result.format(outputFormat.format))
+        try emit(result, format: outputFormat.format)
     }
 }

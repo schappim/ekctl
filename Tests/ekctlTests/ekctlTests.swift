@@ -39,8 +39,8 @@ func parsePriority(_ string: String?) -> Int? {
 
 /// The real shared implementation used by AddEvent.run() / UpdateEvent.run()
 /// — no longer a mirror.
-func parseAlarms(_ string: String?) -> [Double]? {
-    AlarmParsing.parse(string)
+func parseAlarms(_ string: String?) throws -> [Double]? {
+    try AlarmParsing.parse(string)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -842,12 +842,18 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertTrue(ConfigManager.resolveCalendarIDs(",").isEmpty)
     }
 
-    /// Whitespace-only entries do survive as blank IDs rather than vanishing,
-    /// so they reach the calendar lookup and fail there with "Calendar not
-    /// found" — a different path from the empty-list guard, but still an error
-    /// rather than a silently empty selection.
-    func testResolveCalendarIDsKeepsBlankEntriesAsUnfindableIDs() {
-        XCTAssertEqual(ConfigManager.resolveCalendarIDs(" , "), ["", ""])
+    /// A trailing or doubled comma ("work," from "work,$UNSET") keeps the
+    /// blank entry, so the lookup fails instead of quietly dropping it.
+    func testResolveCalendarIDsKeepsEmptyEntriesInAList() {
+        XCTAssertEqual(ConfigManager.resolveCalendarIDs("a,"), ["a", ""])
+        XCTAssertEqual(ConfigManager.resolveCalendarIDs("a,,b"), ["a", "", "b"])
+    }
+
+    /// A value of only blanks and commas names no calendar at all, so it
+    /// takes the empty-selection guard's path, still an error rather than a
+    /// silently empty (or, for `list events`, silently widened) selection.
+    func testResolveCalendarIDsTreatsAllBlankListAsEmpty() {
+        XCTAssertTrue(ConfigManager.resolveCalendarIDs(" , ").isEmpty)
     }
 
     func testResolveCalendarIDsSplitsAndTrims() {
@@ -863,51 +869,47 @@ final class ConfigManagerTests: XCTestCase {
 
 final class AlarmParsingTests: XCTestCase {
 
-    func testNilInputReturnsNil() {
-        XCTAssertNil(parseAlarms(nil))
+    func testNilInputReturnsNil() throws {
+        XCTAssertNil(try parseAlarms(nil))
     }
 
-    func testPositiveNumberMeansBeforeStart() {
+    func testPositiveNumberMeansBeforeStart() throws {
         // "10" → 10 minutes before → -600 seconds
-        let result = parseAlarms("10")!
-        XCTAssertEqual(result, [-600])
+        XCTAssertEqual(try parseAlarms("10"), [-600])
     }
 
-    func testNegativeNumberPassesThroughAsNegativeSeconds() {
-        // "-10" → val is negative → val * 60 = -600
-        let result = parseAlarms("-10")!
-        XCTAssertEqual(result, [-600])
+    func testNegativeNumberPassesThroughAsNegativeSeconds() throws {
+        // "-10" → also before the start → -600
+        XCTAssertEqual(try parseAlarms("-10"), [-600])
     }
 
-    func testPlusPrefixMeansAfterStart() {
+    func testPlusPrefixMeansAfterStart() throws {
         // "+10" → 10 minutes after → +600 seconds
-        let result = parseAlarms("+10")!
-        XCTAssertEqual(result, [600])
+        XCTAssertEqual(try parseAlarms("+10"), [600])
     }
 
-    func testMultipleAlarms() {
-        let result = parseAlarms("10,60")!
-        XCTAssertEqual(result, [-600, -3600])
+    func testMultipleAlarms() throws {
+        XCTAssertEqual(try parseAlarms("10,60"), [-600, -3600])
     }
 
-    func testMixedAlarms() {
-        let result = parseAlarms("10,+5,-15")!
-        XCTAssertEqual(result, [-600, 300, -900])
+    func testMixedAlarms() throws {
+        XCTAssertEqual(try parseAlarms("10,+5,-15"), [-600, 300, -900])
     }
 
-    func testWhitespaceIsTrimmed() {
-        let result = parseAlarms(" 10 , 60 ")!
-        XCTAssertEqual(result, [-600, -3600])
+    func testWhitespaceIsTrimmed() throws {
+        XCTAssertEqual(try parseAlarms(" 10 , 60 "), [-600, -3600])
     }
 
-    func testInvalidComponentsAreSkipped() {
-        let result = parseAlarms("abc,10")!
-        XCTAssertEqual(result, [-600])
+    /// Changed deliberately: an unreadable entry used to be skipped, which
+    /// made `--alarms "abc"` parse to `[]` and silently clear every alarm.
+    func testInvalidComponentIsAnError() {
+        XCTAssertThrowsError(try parseAlarms("abc,10")) { error in
+            XCTAssertEqual(error as? AlarmParsingError, .unrecognised(entry: "abc"))
+        }
     }
 
-    func testEmptyStringReturnsEmptyArray() {
-        let result = parseAlarms("")!
-        XCTAssertTrue(result.isEmpty)
+    func testEmptyStringReturnsEmptyArray() throws {
+        XCTAssertEqual(try parseAlarms(""), [])
     }
 }
 
@@ -1050,9 +1052,9 @@ final class DateValidationTests: XCTestCase {
 
     /// The round trip that makes the field useful: whatever `--alarms` parses,
     /// the output renders back into the same flag value.
-    func testAlarmRenderingRoundTripsThroughAlarmParsing() {
+    func testAlarmRenderingRoundTripsThroughAlarmParsing() throws {
         for flagValue in ["10", "30", "+15", "0", "1440"] {
-            let offsets = AlarmParsing.parse(flagValue)!
+            let offsets = try XCTUnwrap(AlarmParsing.parse(flagValue))
             let dicts = alarmDicts(offsets.map { EKAlarm(relativeOffset: $0) })
             let minutes = dicts[0]["minutesBeforeStart"] as? Int
             let expected = flagValue.hasPrefix("+") ? -Int(flagValue.dropFirst())! : Int(flagValue)!
@@ -1158,8 +1160,10 @@ final class UpdateReminderLogicTests: XCTestCase {
     func testAcceptedFormatsWordingIsPinned() {
         XCTAssertEqual(
             DateParsing.acceptedFormats,
-            "ISO 8601 (e.g., 2026-02-01T09:30:00Z, 2026-02-01T09:30:00+11:00, "
-                + "or 2026-02-01T09:30:00+1100), a date (2026-02-01), a shorthand "
+            "ISO 8601 with an offset (e.g., 2026-02-01T09:30:00Z, 2026-02-01T09:30:00+11:00, "
+                + "or 2026-02-01T09:30:00+1100) or without one for local time "
+                + "(2026-02-01T09:30, 2026-02-01T09:30:00, or 2026-02-01 09:30:00), "
+                + "a date (2026-02-01), a shorthand "
                 + "(now, today, tomorrow, fri, 'tomorrow 3pm', 14:30), or an offset "
                 + "(+90m, +2h, +3d, +1w)")
     }
@@ -2471,7 +2475,12 @@ final class DateParsingShorthandIntegrationTests: XCTestCase {
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let strict = formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
-            XCTAssertEqual(viaShorthandAwareParser, strict, "instant changed for: \(iso)")
+            // Fractional seconds are now added to the parsed fields rather than
+            // decoded by the formatter, which can differ in the last bits of
+            // the Double; anything under a microsecond is the same instant.
+            XCTAssertEqual(
+                viaShorthandAwareParser?.timeIntervalSince1970 ?? .nan,
+                strict?.timeIntervalSince1970 ?? .infinity, accuracy: 1e-6, "instant changed for: \(iso)")
         }
     }
 

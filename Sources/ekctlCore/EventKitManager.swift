@@ -218,39 +218,58 @@ public class EventKitManager {
     /// Lists all calendars (event calendars and reminder lists)
     public func listCalendars() -> JSONOutput {
         var calendars: [[String: Any]] = []
+        // Only consult a store whose permission was granted: asking for the
+        // default calendar of a store we can't read just logs noise.
+        let defaultEventCalendarID = calendarAccessGranted
+            ? eventStore.defaultCalendarForNewEvents?.calendarIdentifier : nil
+        let defaultReminderListID = reminderAccessGranted
+            ? eventStore.defaultCalendarForNewReminders()?.calendarIdentifier : nil
 
-        // Event calendars
-        for calendar in eventStore.calendars(for: .event) {
-            calendars.append([
+        func entry(_ calendar: EKCalendar, type: String, defaultID: String?) -> [String: Any] {
+            [
                 "id": calendar.calendarIdentifier,
                 "title": calendar.title,
-                "type": "event",
+                "type": type,
                 "source": calendar.source?.title ?? "Unknown",
+                "calendarType": Self.calendarTypeString(calendar.type),
                 "color": calendar.cgColor?.hexString ?? "#000000",
                 "allowsModifications": calendar.allowsContentModifications,
-            ])
+                // Where `add event` / `add reminder` put things when no
+                // calendar is named.
+                "isDefault": calendar.calendarIdentifier == defaultID,
+            ]
         }
 
-        // Reminder lists
+        for calendar in eventStore.calendars(for: .event) {
+            calendars.append(entry(calendar, type: "event", defaultID: defaultEventCalendarID))
+        }
         for calendar in eventStore.calendars(for: .reminder) {
-            calendars.append([
-                "id": calendar.calendarIdentifier,
-                "title": calendar.title,
-                "type": "reminder",
-                "source": calendar.source?.title ?? "Unknown",
-                "color": calendar.cgColor?.hexString ?? "#000000",
-                "allowsModifications": calendar.allowsContentModifications,
-            ])
+            calendars.append(entry(calendar, type: "reminder", defaultID: defaultReminderListID))
         }
 
         return JSONOutput.success(["calendars": calendars])
     }
 
+    /// The kind of account behind a calendar: `local` (On My Mac), `calDAV`
+    /// (iCloud, Google, Fastmail...), `exchange`, `subscription` (a read-only
+    /// feed such as public holidays), or `birthday` (generated from Contacts).
+    static func calendarTypeString(_ type: EKCalendarType) -> String {
+        switch type {
+        case .local: return "local"
+        case .calDAV: return "calDAV"
+        case .exchange: return "exchange"
+        case .subscription: return "subscription"
+        case .birthday: return "birthday"
+        @unknown default: return "unknown"
+        }
+    }
+
     // MARK: - Event Operations
 
-    /// Lists events in a calendar within a date range
+    /// Lists events within a date range, from the calendars named by
+    /// `calendarIDs`, or from every event calendar when it is nil.
     public func listEvents(
-        calendarIDs: [String],
+        calendarIDs: [String]?,
         from startDate: Date,
         to endDate: Date,
         search: String? = nil,
@@ -258,21 +277,21 @@ public class EventKitManager {
         sortedByStartAscending: Bool = false,
         limit: Int? = nil
     ) -> JSONOutput {
-        var calendars: [EKCalendar] = []
-        for id in calendarIDs {
-            guard let calendar = eventStore.calendar(withIdentifier: id) else {
-                return JSONOutput.error("Calendar not found with ID: \(id)")
+        // nil, not an empty array, is EventKit's "all calendars". An empty
+        // selection is an error the CLI catches before it gets here.
+        var calendars: [EKCalendar]?
+        if let calendarIDs = calendarIDs {
+            var selected: [EKCalendar] = []
+            for id in calendarIDs {
+                guard let calendar = eventStore.calendar(withIdentifier: id) else {
+                    return JSONOutput.error("Calendar not found with ID: \(id)")
+                }
+                selected.append(calendar)
             }
-            calendars.append(calendar)
+            calendars = selected
         }
 
-        let predicate = eventStore.predicateForEvents(
-            withStart: startDate,
-            end: endDate,
-            calendars: calendars
-        )
-
-        var filtered = eventStore.events(matching: predicate).filter { event in
+        var filtered = fetchEvents(from: startDate, to: endDate, calendars: calendars).filter { event in
             EventFilter.matchesSearch(search, in: [event.title, event.location, event.notes])
             && EventFilter.matchesAvailability(
                 availability,
@@ -292,6 +311,32 @@ public class EventKitManager {
     /// Convenience overload that accepts a single calendar ID.
     public func listEvents(calendarID: String, from startDate: Date, to endDate: Date) -> JSONOutput {
         return listEvents(calendarIDs: [calendarID], from: startDate, to: endDate)
+    }
+
+    /// Every event occurrence overlapping `[start, end]`, however long the
+    /// range.
+    ///
+    /// EventKit silently truncates a predicate spanning more than four years
+    /// to its first four, so `list events --from 2019-01-01 --to 2031-01-01`
+    /// used to return 2019-2023 and nothing after. Longer ranges are fetched
+    /// in chunks; an event straddling a chunk boundary comes back from both,
+    /// so occurrences are deduplicated by ID and start.
+    func fetchEvents(from start: Date, to end: Date, calendars: [EKCalendar]?) -> [EKEvent] {
+        let chunk: TimeInterval = 3 * 365 * 86_400
+        var events: [EKEvent] = []
+        var seen = Set<String>()
+        var chunkStart = start
+        repeat {
+            let chunkEnd = min(end, chunkStart.addingTimeInterval(chunk))
+            let predicate = eventStore.predicateForEvents(
+                withStart: chunkStart, end: chunkEnd, calendars: calendars)
+            for event in eventStore.events(matching: predicate) {
+                let key = "\(event.eventIdentifier ?? "")@\(event.startDate?.timeIntervalSinceReferenceDate ?? 0)"
+                if seen.insert(key).inserted { events.append(event) }
+            }
+            chunkStart = chunkEnd
+        } while chunkStart < end
+        return events
     }
 
     /// Single source of truth for mapping EKEventAvailability to its public string
@@ -353,13 +398,7 @@ public class EventKitManager {
             calendars.append(calendar)
         }
 
-        let predicate = eventStore.predicateForEvents(
-            withStart: startDate,
-            end: endDate,
-            calendars: calendars
-        )
-
-        let events = eventStore.events(matching: predicate)
+        let events = fetchEvents(from: startDate, to: endDate, calendars: calendars)
         let busy: [TimeSlot] = events.compactMap { event in
             guard Self.blocksTime(event, ignoreAllDay: ignoreAllDay),
                   let start = event.startDate,
@@ -442,19 +481,206 @@ public class EventKitManager {
             ignoreAllDay: ignoreAllDay)
     }
 
-    /// Shows details of a specific event
-    public func showEvent(eventID: String) -> JSONOutput {
-        guard let event = eventStore.event(withIdentifier: eventID) else {
-            return JSONOutput.error("Event not found with ID: \(eventID)")
-        }
-
-        return JSONOutput.success(["event": eventToDict(event)])
+    /// Finds the occurrence an event ID (plus optional `--occurrence` date)
+    /// refers to.
+    ///
+    /// Every occurrence of a recurring series shares one identifier, and
+    /// `event(withIdentifier:)` always answers with the *first* one. So an ID
+    /// alone can't say "the 16 March standup"; `occurrence` — the start time
+    /// shown in `list events`, or its `occurrenceDate` — does. Occurrences
+    /// edited on their own carry a `/RID=` suffix and resolve directly.
+    ///
+    /// - Parameter requireOccurrenceForSeries: when true, a bare series ID is
+    ///   refused rather than silently meaning its first occurrence. Updates
+    ///   and deletes pass true unless the span is `all`; before this check
+    ///   existed, `delete event <id>` on a listed weekly meeting quietly
+    ///   deleted the first meeting of the series instead.
+    enum EventLookup {
+        case success(EKEvent)
+        /// The error response to print, already worded for the user.
+        case failure(JSONOutput)
     }
 
-    /// Updates an existing calendar event
+    func resolveEvent(
+        eventID: String,
+        occurrence: Date?,
+        requireOccurrenceForSeries: Bool = false
+    ) -> EventLookup {
+        guard let event = eventStore.event(withIdentifier: eventID) else {
+            return .failure(JSONOutput.error("Event not found with ID: \(eventID)"))
+        }
+        let series = EventIdentifiers.seriesID(eventID)
+        guard let occurrence = occurrence else {
+            // Judged by the ID's shape, not `isDetached`: when a series' first
+            // occurrence has been edited on its own, the bare series ID
+            // resolves to that detached occurrence, and it still isn't a
+            // choice of occurrence.
+            if requireOccurrenceForSeries && series == eventID
+                && (event.hasRecurrenceRules || event.isDetached)
+            {
+                return .failure(JSONOutput.error(
+                    "'\(event.title ?? "Untitled")' is a recurring event, and every occurrence shares "
+                        + "this ID. Pass --occurrence with the occurrence's start time (its startDate in "
+                        + "`ekctl list events`) to choose one, or --span all for the whole series."))
+            }
+            return .success(event)
+        }
+
+        var candidates: [EKEvent] = []
+        func consider(_ candidate: EKEvent) {
+            let key = { (e: EKEvent) in "\(e.eventIdentifier ?? "")@\(e.startDate?.timeIntervalSinceReferenceDate ?? 0)" }
+            if !candidates.contains(where: { key($0) == key(candidate) }) { candidates.append(candidate) }
+        }
+        func sameInstant(_ date: Date?) -> Bool {
+            guard let date = date else { return false }
+            return abs(date.timeIntervalSince(occurrence)) < 1
+        }
+
+        // An occurrence moved on its own is stored under its original slot:
+        // `<series>/RID=<seconds since 2001>`. Looking that up directly finds
+        // it however far it was moved.
+        // A floating all-day event's slot is that date's midnight in UTC
+        // rather than local midnight, so that spelling is tried as well.
+        var slots = [occurrence]
+        if event.isAllDay {
+            let local = Calendar.current.dateComponents([.year, .month, .day], from: occurrence)
+            var utc = Calendar(identifier: .gregorian)
+            utc.timeZone = TimeZone(secondsFromGMT: 0)!
+            if let midnight = utc.date(from: local) { slots.append(midnight) }
+        }
+        for slot in slots {
+            let rid = "\(series)/RID=\(Int(slot.timeIntervalSinceReferenceDate.rounded()))"
+            if let detached = eventStore.event(withIdentifier: rid),
+               EventIdentifiers.seriesID(detached.eventIdentifier ?? "") == series,
+               detached.eventIdentifier == rid || sameInstant(detached.occurrenceDate)
+            {
+                consider(detached)
+            }
+        }
+        // Matching on startDate *or* occurrenceDate finds an occurrence
+        // whether the caller copied its current start time or its original
+        // slot (they differ once it has been moved on its own).
+        let window: TimeInterval = 24 * 60 * 60
+        for candidate in fetchEvents(
+            from: occurrence.addingTimeInterval(-window), to: occurrence.addingTimeInterval(window),
+            calendars: event.calendar.map { [$0] })
+        where EventIdentifiers.seriesID(candidate.eventIdentifier ?? "") == series
+            && (sameInstant(candidate.startDate) || sameInstant(candidate.occurrenceDate))
+        {
+            consider(candidate)
+        }
+
+        switch candidates.count {
+        case 0:
+            return .failure(JSONOutput.error(
+                "No occurrence of '\(event.title ?? "Untitled")' starts at "
+                    + "\(localDateFormatter.string(from: occurrence)). Run `ekctl list events` to see "
+                    + "when its occurrences start."))
+        case 1:
+            return .success(candidates[0])
+        default:
+            // An occurrence moved onto another one's slot: both match. Picking
+            // either would edit or delete a meeting the caller may not mean.
+            let listed = candidates.map {
+                "\($0.eventIdentifier ?? "") (starts \(localDateFormatter.string(from: $0.startDate)))"
+            }.joined(separator: "; ")
+            return .failure(JSONOutput.error(
+                "--occurrence \(localDateFormatter.string(from: occurrence)) matches "
+                    + "\(candidates.count) occurrences of '\(event.title ?? "Untitled")': \(listed). "
+                    + "Pass the ID of the one you mean instead (an occurrence moved on its own has an "
+                    + "ID ending in /RID=…)."))
+        }
+    }
+
+    /// Shows details of a specific event, or of one occurrence of a series.
+    public func showEvent(eventID: String, occurrence: Date? = nil) -> JSONOutput {
+        switch resolveEvent(eventID: eventID, occurrence: occurrence) {
+        case .failure(let error): return error
+        case .success(let event): return JSONOutput.success(["event": eventToDict(event)])
+        }
+    }
+
+    // MARK: Side effects of series edits
+
+    /// What a calendar held before a series-wide change, so anything EventKit
+    /// changed beyond what was asked can be detected and reported.
+    ///
+    /// EventKit keeps a series split with `.futureEvents` linked to the one
+    /// it came from, and changes to the original can cascade into it: a
+    /// `.futureEvents` removal of the original also removes the split-off
+    /// series, and moving the original's start can move it too and drop
+    /// occurrences. There's no public API to see the link, so the only
+    /// honest option is to compare before and after.
+    private struct Snapshot {
+        let from: Date
+        let to: Date
+        let calendars: [EKCalendar]
+        /// Start times of each series' occurrences, keyed by series ID.
+        var starts: [String: [TimeInterval]] = [:]
+        var titles: [String: String] = [:]
+        /// Original slots (`occurrenceDate`) of each series' occurrences.
+        var slots: [String: Set<TimeInterval>] = [:]
+        /// Start and title of each occurrence: a cascade can rename as well
+        /// as move or delete.
+        var signatures: [String: [String]] = [:]
+    }
+
+    /// Calendars by ID, fetched fresh: `eventStore.reset()` invalidates
+    /// calendar objects as well as events.
+    private func calendars(_ ids: [String]) -> [EKCalendar] {
+        ids.compactMap { eventStore.calendar(withIdentifier: $0) }
+    }
+
+    private func snapshot(from: Date, to: Date, calendars: [EKCalendar]) -> Snapshot {
+        var snap = Snapshot(from: from, to: to, calendars: calendars)
+        for event in fetchEvents(from: from, to: to, calendars: calendars) {
+            let series = EventIdentifiers.seriesID(event.eventIdentifier ?? "")
+            snap.starts[series, default: []].append(event.startDate.timeIntervalSinceReferenceDate)
+            snap.signatures[series, default: []].append(
+                "\(event.startDate.timeIntervalSinceReferenceDate)|\(event.title ?? "")")
+            snap.slots[series, default: []].insert(
+                (event.occurrenceDate ?? event.startDate).timeIntervalSinceReferenceDate.rounded())
+            snap.titles[series] = event.title ?? "Untitled"
+        }
+        return snap
+    }
+
+    /// Series other than `expected` whose occurrences changed between the
+    /// two snapshots.
+    private func sideEffects(before: Snapshot, after: Snapshot, expected: Set<String>) -> [[String: Any]] {
+        before.starts.keys.filter { !expected.contains($0) }.sorted().compactMap { series in
+            let was = (before.starts[series] ?? []).sorted()
+            let now = (after.starts[series] ?? []).sorted()
+            guard was != now
+                || (before.signatures[series] ?? []).sorted() != (after.signatures[series] ?? []).sorted()
+            else { return nil }
+            return [
+                "id": series,
+                "title": before.titles[series] ?? "Untitled",
+                "change": now.isEmpty ? "deleted" : "changed",
+                "occurrencesBefore": was.count,
+                "occurrencesAfter": now.count,
+            ]
+        }
+    }
+
+    private static func sideEffectWarning(_ affected: [[String: Any]]) -> String? {
+        guard !affected.isEmpty else { return nil }
+        let names = affected.map { "'\($0["title"] ?? "")'" }.joined(separator: ", ")
+        return "EventKit also changed \(affected.count == 1 ? "another series" : "\(affected.count) other series") "
+            + "in this calendar: \(names), listed in alsoAffected. This happens to a series that was split off "
+            + "this one with --span future. Check them with `ekctl list events`."
+    }
+
+    // MARK: Update
+
+    /// Updates an existing calendar event: one occurrence, an occurrence and
+    /// everything after it, or the whole series (`span`).
     public func updateEvent(
         eventID: String,
-        title: String?,
+        occurrence: Date? = nil,
+        span: EventSpan = .this,
+        title newTitle: String?,
         startDate: Date?,
         endDate: Date?,
         location: String?,
@@ -463,95 +689,445 @@ public class EventKitManager {
         url: String?,
         availability: AvailabilitySetting?,
         travelTime: TimeInterval?,
-        alarms: [Double]?
+        alarms: [Double]?,
+        addAlarms: [Double]? = nil,
+        calendarID: String? = nil,
+        recurrence: RecurrenceSpec = RecurrenceSpec()
     ) -> JSONOutput {
-        guard let event = eventStore.event(withIdentifier: eventID) else {
-            return JSONOutput.error("Event not found with ID: \(eventID)")
+        let addressed: EKEvent
+        switch resolveEvent(
+            eventID: eventID, occurrence: occurrence, requireOccurrenceForSeries: span != .all)
+        {
+        case .failure(let error): return error
+        case .success(let event): addressed = event
+        }
+        let partOfSeries = addressed.hasRecurrenceRules || addressed.isDetached
+        let title = addressed.title ?? "Untitled"
+        let seriesID = EventIdentifiers.seriesID(addressed.eventIdentifier ?? eventID)
+        let first = partOfSeries ? eventStore.event(withIdentifier: seriesID) : addressed
+
+        let target: EKEvent
+        switch seriesTarget(for: addressed, span: span, partOfSeries: partOfSeries) {
+        case .failure(let error): return error
+        case .success(let event): target = event
+        }
+        guard let addressedStart = addressed.startDate, let addressedEnd = addressed.endDate,
+              let targetStart = target.startDate, target.endDate != nil
+        else {
+            return JSONOutput.error("'\(title)' has no start or end date, so it can't be updated.")
         }
 
-        if let title = title { event.title = title }
-        if let startDate = startDate { event.startDate = startDate }
-        if let endDate = endDate { event.endDate = endDate }
+        // Validate everything that can be refused before changing anything.
+        var newCalendar: EKCalendar?
+        if let calendarID = calendarID {
+            switch writableEventCalendar(calendarID) {
+            case .failure(let error): return error
+            case .success(let calendar): newCalendar = calendar
+            }
+            // EventKit keeps a series in one calendar: assigning a new one to
+            // a single occurrence and saving it with `.thisEvent` silently
+            // moves every occurrence, detached ones included.
+            if partOfSeries && span != .all
+                && newCalendar?.calendarIdentifier != target.calendar?.calendarIdentifier
+            {
+                return JSONOutput.error(
+                    "'\(title)' is part of a recurring series, and EventKit can only move a whole series "
+                        + "between calendars. Pass --span all to move every occurrence.")
+            }
+        }
+
+        // The rule the series has now. A detached occurrence carries none of
+        // its own, so it's read from the series.
+        let currentRule = (target.recurrenceRules?.first ?? first?.recurrenceRules?.first)
+            .map(RecurrenceSpec.init)
+        var newRule: RecurrenceSpec?
+        if !recurrence.isEmpty {
+            // With `.thisEvent`, EventKit doesn't change the series' rule; it
+            // detaches this one occurrence and reports success.
+            if partOfSeries && span == .this {
+                return JSONOutput.error(
+                    "Changing the recurrence of '\(title)' needs --span future (this occurrence onwards) "
+                        + "or --span all (the whole series).")
+            }
+            // EventKit mishandles a `.futureEvents` save of a rule through an
+            // occurrence that was edited on its own: it splits the series but
+            // leaves the occurrence stranded in the old one.
+            if addressed.isDetached && span == .future {
+                return JSONOutput.error(
+                    "This occurrence of '\(title)' was edited on its own, and EventKit can't start a new "
+                        + "recurrence from it. Use --span all, or --span future from an occurrence that hasn't "
+                        + "been edited.")
+            }
+            if recurrence.removesRecurrence {
+                guard partOfSeries else {
+                    return JSONOutput.error("'\(title)' doesn't repeat, so there's no recurrence to remove.")
+                }
+            } else {
+                let rule = recurrence.applying(to: currentRule)
+                guard rule.ekRule != nil else {
+                    return JSONOutput.error(
+                        "'\(title)' doesn't repeat, so there's no recurrence to change. "
+                            + "Pass --recurrence-frequency to make it repeat.")
+                }
+                do {
+                    try recurrence.validate(against: rule)
+                } catch {
+                    return JSONOutput.error("\(error)")
+                }
+                newRule = rule
+            }
+        }
+
+        if travelTime != nil && !Self.supportsTravelTime(target) {
+            // See `supportsTravelTime` for why the guard is not optional.
+            return JSONOutput.error(
+                "Travel time is not supported by EventKit on this version of macOS; omit --travel-time.")
+        }
+
+        // Times are a clock-time shift of the addressed occurrence, measured
+        // in the event's own zone (see `WallClockShift`). For `--span all`
+        // the same shift is applied to the series' first occurrence: moving
+        // "the 16 March standup" to 11:00 moves every standup to 11:00
+        // rather than restarting the series on 16 March.
+        let timeZone = target.timeZone ?? .current
+        let startShift = startDate.map { WallClockShift(from: addressedStart, to: $0, in: timeZone) }
+        let endShift = endDate.map { WallClockShift(from: addressedEnd, to: $0, in: timeZone) }
+        let seriesEdit = partOfSeries && span != .this
+
+        // A rule pinned to particular days keeps generating them: moving a
+        // Monday-only series to Tuesday would leave its first occurrence on
+        // a Tuesday and every other on a Monday. Only the pinned part
+        // matters (a Monday series moved a week later is still on Mondays),
+        // and only when the caller isn't replacing it.
+        if seriesEdit, let shift = startShift, !shift.isZero, let rule = newRule ?? currentRule {
+            var gregorian = Calendar(identifier: .gregorian)
+            gregorian.timeZone = timeZone
+            let moved = shift.applied(to: addressedStart)
+            func changes(_ component: Calendar.Component) -> Bool {
+                gregorian.component(component, from: addressedStart) != gregorian.component(component, from: moved)
+            }
+            let pinned: [(Bool, Bool, String)] = [
+                (rule.daysOfTheWeek != nil && recurrence.daysOfTheWeek == nil, changes(.weekday),
+                 "--recurrence-days"),
+                (rule.daysOfTheMonth != nil && recurrence.daysOfTheMonth == nil, changes(.day),
+                 "--recurrence-days-of-month"),
+                (rule.monthsOfTheYear != nil && recurrence.monthsOfTheYear == nil, changes(.month),
+                 "--recurrence-months"),
+                ((rule.daysOfTheYear != nil && recurrence.daysOfTheYear == nil)
+                    || (rule.weeksOfTheYear != nil && recurrence.weeksOfTheYear == nil),
+                 changes(.day) || changes(.month), "--recurrence-days-of-year or --recurrence-weeks-of-year"),
+            ]
+            if let (_, _, flag) = pinned.first(where: { $0.0 && $0.1 }) {
+                return JSONOutput.error(
+                    "This moves '\(title)' to a different day, but its recurrence is pinned to particular "
+                        + "days, so EventKit would keep repeating on the old ones. Pass the new days with \(flag) "
+                        + "as well, or move it to the same day of the week or month.")
+            }
+        }
+
+        // "From this occurrence on, stop repeating": EventKit ignores a
+        // `.futureEvents` save that removes the rule mid-series and strips it
+        // from the whole series instead, deleting every occurrence but the
+        // first. A one-occurrence rule *does* split the series, so that's
+        // saved first and the new series' rule removed afterwards.
+        let isFirstOccurrence = first.map {
+            abs(($0.occurrenceDate ?? $0.startDate).timeIntervalSince(addressed.occurrenceDate ?? addressedStart)) < 1
+        } ?? true
+        let endsSeriesHere = recurrence.removesRecurrence && span == .future && !isFirstOccurrence
+
+        // Snapshot the calendar(s) before a series-wide change; see
+        // `Snapshot`. The window runs from the series' start to four years
+        // past now (or past its start, if that's later), widened by any time
+        // shift so both snapshots cover the same occurrences.
+        let shiftMargin = abs(startShift?.seconds ?? 0) + 2 * 86_400
+        let windowStart = min(first?.startDate ?? targetStart, targetStart).addingTimeInterval(-shiftMargin)
+        let windowEnd = max(windowStart, Date()).addingTimeInterval(4 * 365 * 86_400 + shiftMargin)
+        let watchedCalendarIDs = [target.calendar, newCalendar].compactMap { $0?.calendarIdentifier }
+        let before = seriesEdit
+            ? snapshot(from: windowStart, to: windowEnd, calendars: calendars(watchedCalendarIDs)) : nil
+        // The slot the target occupied, to measure how far EventKit actually
+        // moved the series (see the re-cancelling below).
+        let targetSlot = target.occurrenceDate ?? targetStart
+
+        if target === addressed {
+            if let startDate = startDate { target.startDate = startDate }
+            if let endDate = endDate { target.endDate = endDate }
+        } else {
+            if let shift = startShift { target.startDate = shift.applied(to: target.startDate) }
+            if let shift = endShift { target.endDate = shift.applied(to: target.endDate) }
+        }
+        if let newTitle = newTitle { target.title = newTitle }
         if let location = location {
-            event.location = location
+            target.location = location
             // Use shared resolver (5s timeout) for consistent behavior with addEvent
-            let structured = resolveLocation(location)
-            event.structuredLocation = structured
+            target.structuredLocation = resolveLocation(location)
         }
-        if let notes = notes { event.notes = notes }
-        if let allDay = allDay { event.isAllDay = allDay }
-
+        if let notes = notes { target.notes = notes }
+        if let allDay = allDay { target.isAllDay = allDay }
         if let urlString = url, let urlObj = URL(string: urlString) {
-            event.url = urlObj
+            target.url = urlObj
         }
-
         if let availability = availability {
-            event.availability = availability.ekAvailability
+            target.availability = availability.ekAvailability
         }
-
         if let travelTime = travelTime {
             // IMPORTANT: `travelTime` is set using KVC on a private/undocumented property name ("travelTime").
             // This is intentional as EventKit does not expose a public API for travel time.
-            // See `supportsTravelTime` for why the guard is not optional.
-            guard Self.supportsTravelTime(event) else {
-                return JSONOutput.error(
-                    "Travel time is not supported by EventKit on this version of macOS; omit --travel-time."
-                )
-            }
-            event.setValue(travelTime, forKey: Self.travelTimeKey)
+            target.setValue(travelTime, forKey: Self.travelTimeKey)
         }
-
         if let alarms = alarms {
-            if let existing = event.alarms {
-                for alarm in existing { event.removeAlarm(alarm) }
+            for alarm in target.alarms ?? [] { target.removeAlarm(alarm) }
+            for offset in alarms { target.addAlarm(EKAlarm(relativeOffset: offset)) }
+        }
+        if let addAlarms = addAlarms {
+            // An alarm that's already there isn't added twice.
+            let existing = Set((target.alarms ?? []).filter { $0.absoluteDate == nil }.map(\.relativeOffset))
+            for offset in addAlarms where !existing.contains(offset) {
+                target.addAlarm(EKAlarm(relativeOffset: offset))
             }
-            for offset in alarms {
-                event.addAlarm(EKAlarm(relativeOffset: offset))
-            }
+        }
+        if let newCalendar = newCalendar { target.calendar = newCalendar }
+        if endsSeriesHere, var single = currentRule {
+            single.end = .count(1)
+            target.recurrenceRules = single.ekRule.map { [$0] }
+        } else if recurrence.removesRecurrence {
+            target.recurrenceRules = nil
+        } else if let rule = newRule?.ekRule {
+            target.recurrenceRules = [rule]
         }
 
         do {
-            try eventStore.save(event, span: .thisEvent)
-            return JSONOutput.success([
-                "status": "success",
-                "message": "Event updated successfully",
-                "event": eventToDict(event),
-            ])
+            try eventStore.save(target, span: span == .this ? .thisEvent : .futureEvents)
         } catch {
             return JSONOutput.error("Failed to update event: \(error.localizedDescription)")
         }
+
+        // Read everything back from the store from here on: objects fetched
+        // before a series save can be stale.
+        let savedID = target.eventIdentifier ?? eventID
+        let savedSeries = EventIdentifiers.seriesID(savedID)
+        let addressedID = addressed.eventIdentifier
+        let movedThroughFirst = target !== addressed && addressed.isDetached
+        let savedStart = target.startDate ?? targetStart
+        let split = span == .future && savedSeries != seriesID
+        let finalCalendarID = (newCalendar ?? target.calendar)?.calendarIdentifier
+        var warnings: [String] = []
+        eventStore.reset()
+
+        // `.futureEvents` from mid-series splits it: earlier occurrences keep
+        // the old ID, the rest become a new series with a new one. When the
+        // save also carries a new rule, EventKit truncates the old series
+        // correctly but saves the new one *without* the rule (observed on
+        // macOS 26), so it's applied again to the new series' first
+        // occurrence. Ending the series here removes the one-occurrence rule
+        // saved above the same way.
+        if split && (newRule != nil || endsSeriesHere) {
+            if let head = eventStore.event(withIdentifier: savedID) {
+                if endsSeriesHere {
+                    head.recurrenceRules = nil
+                } else if var rule = newRule {
+                    // A series that ended after N occurrences still ends after
+                    // N in total: the new series gets what the old one hadn't
+                    // used, unless the caller set a new end or a new rule.
+                    if recurrence.frequency == nil && recurrence.end == nil, case .count(let total) = rule.end,
+                       case .count(let used)? = eventStore.event(withIdentifier: seriesID)?
+                        .recurrenceRules?.first.map({ RecurrenceSpec($0).end })
+                    {
+                        rule.end = .count(max(1, total - used))
+                    }
+                    head.recurrenceRules = rule.ekRule.map { [$0] }
+                }
+                do {
+                    try eventStore.save(head, span: .futureEvents)
+                } catch {
+                    warnings.append(
+                        "The series was split at this occurrence (new ID \(savedID)), but its new recurrence "
+                            + "couldn't be applied: \(error.localizedDescription). Set it with "
+                            + "`ekctl update event \(savedID) --span all` and the --recurrence-* flags.")
+                }
+            } else {
+                warnings.append(
+                    "The series was split at this occurrence, but the new series (\(savedID)) couldn't be read "
+                        + "back to apply its recurrence. Check it with `ekctl list events`.")
+            }
+            eventStore.reset()
+        }
+
+        // An occurrence edited on its own keeps its own times when the series
+        // moves, but the caller gave a time for *this* one: put it there.
+        if movedThroughFirst, startDate != nil || endDate != nil, let id = addressedID,
+           let occurrence = eventStore.event(withIdentifier: id)
+        {
+            if let startDate = startDate { occurrence.startDate = startDate }
+            if let endDate = endDate { occurrence.endDate = endDate }
+            do {
+                try eventStore.save(occurrence, span: .thisEvent)
+            } catch {
+                warnings.append(
+                    "The series moved, but this occurrence (edited on its own earlier) couldn't be moved to the "
+                        + "time given: \(error.localizedDescription).")
+            }
+            eventStore.reset()
+        }
+
+        // Re-saving a series' rule or moving its start makes EventKit forget
+        // which occurrences had been deleted from it (their exclusions are
+        // keyed to the old times), so they come back. Any occurrence whose
+        // original slot wasn't there before is one of those, and is deleted
+        // again. The shift is read from what EventKit actually did to the
+        // target's slot, not from the request: saving through an occurrence
+        // that was moved on its own rebuilds the series from where it sits.
+        //
+        // Slots are compared with a few hours' tolerance: EventKit repeats
+        // at most daily, so distinct slots are ~23 hours apart or more, while
+        // a slot moved into a DST gap lands up to an hour off. Only when the
+        // rule produces the same slots as before (unchanged, or only its end
+        // changed), and only within the range the old slots covered, so an
+        // extended series keeps its new occurrences.
+        var recancelled = 0
+        let seriesShift = WallClockShift(from: targetSlot, to: savedStart, in: timeZone)
+        let slotsKept = recurrence.isEmpty || recurrence.changesOnlyEnd
+        if seriesEdit, slotsKept, !recurrence.removesRecurrence, newRule != nil || !seriesShift.isZero,
+           let before = before, let previous = before.slots[seriesID], !previous.isEmpty
+        {
+            let tolerance: TimeInterval = 3 * 3600
+            let floatingPrevious = previous.map {
+                WallClockShift.floating(Date(timeIntervalSinceReferenceDate: $0), in: timeZone)
+            }.sorted()
+            // From the series' own first slot (which may itself have been
+            // deleted), or from the addressed occurrence for `future`. An
+            // unchanged rule produces exactly its old slots, so any newcomer
+            // is a returned deletion; a changed end may legitimately add
+            // slots past the old last one.
+            let lowest = span == .future
+                ? WallClockShift.floating(addressed.occurrenceDate ?? addressedStart, in: timeZone)
+                : min(floatingPrevious[0], WallClockShift.floating(targetSlot, in: timeZone))
+            let highest = recurrence.isEmpty ? .infinity : floatingPrevious[floatingPrevious.count - 1]
+            for event in fetchEvents(from: windowStart, to: windowEnd, calendars: calendars(watchedCalendarIDs))
+            where EventIdentifiers.seriesID(event.eventIdentifier ?? "") == savedSeries && !event.isDetached {
+                let slot = event.occurrenceDate ?? event.startDate!
+                let original = WallClockShift.floating(slot, in: timeZone) - seriesShift.seconds
+                guard original >= lowest - tolerance, original <= highest + tolerance else { continue }
+                if !floatingPrevious.contains(where: { abs($0 - original) <= tolerance }) {
+                    do {
+                        try eventStore.remove(event, span: .thisEvent)
+                        recancelled += 1
+                    } catch {
+                        warnings.append(
+                            "An occurrence deleted earlier came back at \(localDateFormatter.string(from: slot)) "
+                                + "and couldn't be removed again: \(error.localizedDescription).")
+                    }
+                }
+            }
+            if recancelled > 0 { eventStore.reset() }
+        }
+
+        var payload: [String: Any] = [
+            "status": "success",
+            "message": "Event updated successfully",
+            "span": span.rawValue,
+        ]
+        // The occurrence the caller addressed, as it now stands: where they
+        // asked for it, or where the series' move put it. The series' first
+        // occurrence (what a `--span all` save goes through) may itself be
+        // deleted or moved, so it isn't reported.
+        let expected = startDate ?? seriesShift.applied(to: addressed.occurrenceDate ?? addressedStart)
+        let saved = fetchEvents(
+            from: expected.addingTimeInterval(-2 * 86_400), to: expected.addingTimeInterval(2 * 86_400),
+            calendars: calendars([finalCalendarID].compactMap { $0 })
+        ).filter {
+            $0.eventIdentifier == addressedID || EventIdentifiers.seriesID($0.eventIdentifier ?? "") == savedSeries
+        }.min { abs($0.startDate.timeIntervalSince(expected)) < abs($1.startDate.timeIntervalSince(expected)) }
+            ?? eventStore.event(withIdentifier: savedID)
+        if let saved = saved { payload["event"] = eventToDict(saved) }
+        if recancelled > 0 {
+            payload["recancelledOccurrences"] = recancelled
+            warnings.append(
+                "Saving the series brought back \(recancelled) occurrence(s) that had been deleted; "
+                    + "they were deleted again.")
+        }
+        if let before = before {
+            let after = snapshot(from: windowStart, to: windowEnd, calendars: calendars(watchedCalendarIDs))
+            let affected = sideEffects(before: before, after: after, expected: [seriesID, savedSeries])
+            if !affected.isEmpty {
+                payload["alsoAffected"] = affected
+                if let warning = Self.sideEffectWarning(affected) { warnings.append(warning) }
+            }
+        }
+        if !warnings.isEmpty { payload["warnings"] = warnings }
+        return JSONOutput.success(payload)
     }
 
-    /// Creates a new calendar event
+    /// The event a span-aware change acts on: the addressed occurrence, or,
+    /// for `--span all` on a series, the series' first occurrence (saving or
+    /// removing that with `.futureEvents` covers every occurrence).
+    private func seriesTarget(
+        for addressed: EKEvent, span: EventSpan, partOfSeries: Bool
+    ) -> EventLookup {
+        guard span == .all && partOfSeries else { return .success(addressed) }
+        let series = EventIdentifiers.seriesID(addressed.eventIdentifier ?? "")
+        guard let first = eventStore.event(withIdentifier: series) else {
+            return .failure(JSONOutput.error("Couldn't find the series '\(addressed.title ?? "Untitled")' belongs to."))
+        }
+        return .success(first)
+    }
+
+    private enum CalendarLookup {
+        case success(EKCalendar)
+        case failure(JSONOutput)
+    }
+
+    /// An event calendar that can take new or moved events.
+    private func writableEventCalendar(_ calendarID: String) -> CalendarLookup {
+        guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
+            return .failure(JSONOutput.error("Calendar not found with ID: \(calendarID)"))
+        }
+        // `calendar(withIdentifier:)` also resolves Reminders lists.
+        guard calendar.allowedEntityTypes.contains(.event) else {
+            return .failure(JSONOutput.error(
+                "'\(calendar.title)' is a Reminders list, not an event calendar. "
+                    + "Run `ekctl list calendars` to find an event calendar."))
+        }
+        guard calendar.allowsContentModifications else {
+            return .failure(JSONOutput.error("Calendar '\(calendar.title)' does not allow modifications."))
+        }
+        return .success(calendar)
+    }
+
+    /// Creates a new calendar event, in `calendarID` or, when nil, the
+    /// calendar the user chose for new events in Calendar's settings.
     public func addEvent(
-        calendarID: String,
+        calendarID: String?,
         title: String,
         startDate: Date,
         endDate: Date,
         location: String?,
         notes: String?,
         allDay: Bool,
-        recurrenceFrequency: String? = nil,
-        recurrenceInterval: Int = 1,
-        recurrenceEndCount: Int? = nil,
-        recurrenceEndDate: Date? = nil,
-        recurrenceDays: String? = nil,
-        recurrenceMonths: [NSNumber]? = nil,
-        recurrenceDaysOfMonth: [NSNumber]? = nil,
-        recurrenceWeeksOfYear: [NSNumber]? = nil,
-        recurrenceDaysOfYear: [NSNumber]? = nil,
-        recurrenceSetPositions: [NSNumber]? = nil,
+        recurrence: RecurrenceSpec = RecurrenceSpec(),
         travelTime: TimeInterval? = nil,
         alarms: [Double]? = nil,
         url: String? = nil,
         availability: AvailabilitySetting? = nil
     ) -> JSONOutput {
-        guard let calendar = eventStore.calendar(withIdentifier: calendarID) else {
-            return JSONOutput.error("Calendar not found with ID: \(calendarID)")
-        }
-
-        guard calendar.allowsContentModifications else {
-            return JSONOutput.error("Calendar '\(calendar.title)' does not allow modifications.")
+        let calendar: EKCalendar
+        if let calendarID = calendarID {
+            switch writableEventCalendar(calendarID) {
+            case .failure(let error): return error
+            case .success(let found): calendar = found
+            }
+        } else {
+            guard let defaultCalendar = eventStore.defaultCalendarForNewEvents else {
+                return JSONOutput.error(
+                    "No default calendar is set for new events. Pass --calendar, or pick a default "
+                        + "in Calendar > Settings > General.")
+            }
+            guard defaultCalendar.allowsContentModifications else {
+                return JSONOutput.error(
+                    "The default calendar '\(defaultCalendar.title)' does not allow modifications. "
+                        + "Pass --calendar.")
+            }
+            calendar = defaultCalendar
         }
 
         let event = EKEvent(eventStore: eventStore)
@@ -587,74 +1163,9 @@ public class EventKitManager {
             event.structuredLocation = structuredLocation
         }
 
-        // Recurrence Support
-        if let freqString = recurrenceFrequency?.lowercased(), !freqString.isEmpty {
-            var frequency: EKRecurrenceFrequency
-            switch freqString {
-            case "daily": frequency = .daily
-            case "weekly": frequency = .weekly
-            case "monthly": frequency = .monthly
-            case "yearly": frequency = .yearly
-            default: return JSONOutput.error("Invalid recurrence frequency: \(freqString)")
-            }
-
-            var daysOfTheWeek: [EKRecurrenceDayOfWeek]?
-            if let daysStr = recurrenceDays {
-                var days: [EKRecurrenceDayOfWeek] = []
-                let dayMap: [String: EKWeekday] = [
-                    "mon": .monday, "monday": .monday,
-                    "tue": .tuesday, "tuesday": .tuesday,
-                    "wed": .wednesday, "wednesday": .wednesday,
-                    "thu": .thursday, "thursday": .thursday,
-                    "fri": .friday, "friday": .friday,
-                    "sat": .saturday, "saturday": .saturday,
-                    "sun": .sunday, "sunday": .sunday,
-                ]
-
-                // Parse strings like "mon", "1mon", "-1fri"
-                for dayPart in daysStr.split(separator: ",") {
-                    var part = dayPart.trimmingCharacters(in: .whitespaces).lowercased()
-                    var weekNumber = 0
-
-                    // Extract leading number if present
-                    if let range = part.range(of: "^-?\\d+", options: .regularExpression) {
-                        if let num = Int(part[range]) {
-                            weekNumber = num
-                            part.removeSubrange(range)
-                        }
-                    }
-
-                    if let weekday = dayMap[part] {
-                        if weekNumber != 0 {
-                            days.append(EKRecurrenceDayOfWeek(weekday, weekNumber: weekNumber))
-                        } else {
-                            days.append(EKRecurrenceDayOfWeek(weekday))
-                        }
-                    } else {
-                        return JSONOutput.error("Invalid recurrence day: \(dayPart)")
-                    }
-                }
-                daysOfTheWeek = days.isEmpty ? nil : days
-            }
-
-            var recurrenceEnd: EKRecurrenceEnd?
-            if let count = recurrenceEndCount {
-                recurrenceEnd = EKRecurrenceEnd(occurrenceCount: count)
-            } else if let recEndDate = recurrenceEndDate {
-                recurrenceEnd = EKRecurrenceEnd(end: recEndDate)
-            }
-
-            let rule = EKRecurrenceRule(
-                recurrenceWith: frequency,
-                interval: recurrenceInterval,
-                daysOfTheWeek: daysOfTheWeek,
-                daysOfTheMonth: recurrenceDaysOfMonth,
-                monthsOfTheYear: recurrenceMonths,
-                weeksOfTheYear: recurrenceWeeksOfYear,
-                daysOfTheYear: recurrenceDaysOfYear,
-                setPositions: recurrenceSetPositions,
-                end: recurrenceEnd
-            )
+        // Recurrence: parsed and validated by the CLI before the permission
+        // prompt (see `RecurrenceParsing`).
+        if let rule = recurrence.ekRule {
             event.addRecurrenceRule(rule)
         }
 
@@ -680,24 +1191,68 @@ public class EventKitManager {
         }
     }
 
-    /// Deletes a calendar event
-    public func deleteEvent(eventID: String) -> JSONOutput {
-        guard let event = eventStore.event(withIdentifier: eventID) else {
-            return JSONOutput.error("Event not found with ID: \(eventID)")
+    /// Deletes a calendar event: one occurrence, an occurrence and everything
+    /// after it, or the whole series (`span`).
+    public func deleteEvent(eventID: String, occurrence: Date? = nil, span: EventSpan = .this) -> JSONOutput {
+        let addressed: EKEvent
+        switch resolveEvent(
+            eventID: eventID, occurrence: occurrence, requireOccurrenceForSeries: span != .all)
+        {
+        case .failure(let error): return error
+        case .success(let event): addressed = event
+        }
+        let partOfSeries = addressed.hasRecurrenceRules || addressed.isDetached
+        let seriesID = EventIdentifiers.seriesID(addressed.eventIdentifier ?? eventID)
+
+        let target: EKEvent
+        switch seriesTarget(for: addressed, span: span, partOfSeries: partOfSeries) {
+        case .failure(let error): return error
+        case .success(let event): target = event
         }
 
-        let title = event.title ?? "Untitled"
+        // Rendered before removal: a removed event no longer has its fields.
+        let deleted = eventToDict(target)
+        let title = target.title ?? "Untitled"
+        let message: String
+        switch (span, partOfSeries) {
+        case (.this, _), (_, false): message = "Event '\(title)' deleted successfully"
+        case (.future, true): message = "Event '\(title)' and its later occurrences deleted successfully"
+        case (.all, true): message = "All occurrences of '\(title)' deleted successfully"
+        }
+
+        // A series-wide removal can cascade into a series split off this one
+        // earlier; see `Snapshot`.
+        let watch = partOfSeries && span != .this
+        let windowStart = (target.startDate ?? Date()).addingTimeInterval(-86_400)
+        let windowEnd = max(windowStart, Date()).addingTimeInterval(4 * 365 * 86_400)
+        let calendars = [target.calendar].compactMap { $0 }
+        let before = watch ? snapshot(from: windowStart, to: windowEnd, calendars: calendars) : nil
 
         do {
-            try eventStore.remove(event, span: .thisEvent)
-            return JSONOutput.success([
-                "status": "success",
-                "message": "Event '\(title)' deleted successfully",
-                "deletedEventID": eventID,
-            ])
+            try eventStore.remove(target, span: span == .this ? .thisEvent : .futureEvents)
         } catch {
             return JSONOutput.error("Failed to delete event: \(error.localizedDescription)")
         }
+
+        var payload: [String: Any] = [
+            "status": "success",
+            "message": message,
+            "deletedEventID": eventID,
+            "span": span.rawValue,
+            // Not `event`: CSV and text output render a top-level `event` as
+            // the row, which would hide the status and message.
+            "deletedEvent": deleted,
+        ]
+        if let before = before {
+            eventStore.reset()
+            let after = snapshot(from: windowStart, to: windowEnd, calendars: calendars)
+            let affected = sideEffects(before: before, after: after, expected: [seriesID])
+            if !affected.isEmpty {
+                payload["alsoAffected"] = affected
+                payload["warnings"] = [Self.sideEffectWarning(affected)].compactMap { $0 }
+            }
+        }
+        return JSONOutput.success(payload)
     }
 
     // MARK: - Reminder Operations
@@ -1021,6 +1576,17 @@ public class EventKitManager {
             dict["travelTimeMinutes"] = NSNull()
         }
         dict["hasRecurrenceRules"] = event.hasRecurrenceRules
+        dict["recurrenceRules"] = (event.recurrenceRules ?? []).map {
+            RecurrenceSpec($0).outputDict { formatter.string(from: $0) }
+        }
+        // Every occurrence of a series shares `id`, so this is what tells
+        // them apart — and what `--occurrence` takes back.
+        if let occurrenceDate = event.occurrenceDate {
+            dict["occurrenceDate"] = formatter.string(from: occurrenceDate)
+        } else {
+            dict["occurrenceDate"] = NSNull()
+        }
+        dict["isDetached"] = event.isDetached
 
         dict["availability"] = Self.availabilityString(event.availability)
 
@@ -1098,6 +1664,104 @@ extension AvailabilitySetting {
         case .tentative: return .tentative
         case .unavailable: return .unavailable
         }
+    }
+}
+
+// MARK: - RecurrenceSpec ↔ EventKit
+
+extension RecurrenceSpec {
+    /// Reads an existing rule back into the CLI's terms, so an update can
+    /// change one part of it and rebuild the rest unchanged.
+    init(_ rule: EKRecurrenceRule) {
+        self.init()
+        switch rule.frequency {
+        case .daily: frequency = .some(.daily)
+        case .weekly: frequency = .some(.weekly)
+        case .monthly: frequency = .some(.monthly)
+        case .yearly: frequency = .some(.yearly)
+        @unknown default: frequency = nil
+        }
+        interval = rule.interval
+        if let end = rule.recurrenceEnd {
+            if let date = end.endDate {
+                self.end = .date(date)
+            } else {
+                self.end = .count(end.occurrenceCount)
+            }
+        } else {
+            self.end = .never
+        }
+        daysOfTheWeek = rule.daysOfTheWeek?.map {
+            RecurrenceDay(weekday: $0.dayOfTheWeek.rawValue, week: $0.weekNumber)
+        }
+        monthsOfTheYear = rule.monthsOfTheYear?.map(\.intValue)
+        daysOfTheMonth = rule.daysOfTheMonth?.map(\.intValue)
+        weeksOfTheYear = rule.weeksOfTheYear?.map(\.intValue)
+        daysOfTheYear = rule.daysOfTheYear?.map(\.intValue)
+        setPositions = rule.setPositions?.map(\.intValue)
+    }
+
+    /// The EventKit rule this spec describes, or nil when it names no
+    /// frequency (nothing to build) or removes the recurrence.
+    var ekRule: EKRecurrenceRule? {
+        guard case .some(.some(let frequency)) = frequency else { return nil }
+        let ekFrequency: EKRecurrenceFrequency
+        switch frequency {
+        case .daily: ekFrequency = .daily
+        case .weekly: ekFrequency = .weekly
+        case .monthly: ekFrequency = .monthly
+        case .yearly: ekFrequency = .yearly
+        }
+        let ekEnd: EKRecurrenceEnd?
+        switch end {
+        case .count(let count): ekEnd = EKRecurrenceEnd(occurrenceCount: count)
+        case .date(let date): ekEnd = EKRecurrenceEnd(end: date)
+        case .never, nil: ekEnd = nil
+        }
+        func numbers(_ values: [Int]?) -> [NSNumber]? { values.map { $0.map(NSNumber.init(value:)) } }
+        return EKRecurrenceRule(
+            recurrenceWith: ekFrequency,
+            interval: interval ?? 1,
+            daysOfTheWeek: daysOfTheWeek?.compactMap { day in
+                guard let weekday = EKWeekday(rawValue: day.weekday) else { return nil }
+                return day.week == 0
+                    ? EKRecurrenceDayOfWeek(weekday)
+                    : EKRecurrenceDayOfWeek(weekday, weekNumber: day.week)
+            },
+            daysOfTheMonth: numbers(daysOfTheMonth),
+            monthsOfTheYear: numbers(monthsOfTheYear),
+            weeksOfTheYear: numbers(weeksOfTheYear),
+            daysOfTheYear: numbers(daysOfTheYear),
+            setPositions: numbers(setPositions),
+            end: ekEnd
+        )
+    }
+
+    /// Output form, using the flag names' vocabulary so a rule read from one
+    /// event can be handed back to `--recurrence-*` on another.
+    func outputDict(formatDate: (Date) -> String) -> [String: Any] {
+        var dict: [String: Any] = [:]
+        if case .some(.some(let frequency)) = frequency { dict["frequency"] = frequency.rawValue }
+        dict["interval"] = interval ?? 1
+        func list<T>(_ values: [T]?) -> Any { values.map { $0 as Any } ?? NSNull() }
+        dict["daysOfTheWeek"] = list(daysOfTheWeek?.map(\.formatted))
+        dict["monthsOfTheYear"] = list(monthsOfTheYear)
+        dict["daysOfTheMonth"] = list(daysOfTheMonth)
+        dict["weeksOfTheYear"] = list(weeksOfTheYear)
+        dict["daysOfTheYear"] = list(daysOfTheYear)
+        dict["setPositions"] = list(setPositions)
+        switch end {
+        case .count(let count):
+            dict["endCount"] = count
+            dict["endDate"] = NSNull()
+        case .date(let date):
+            dict["endCount"] = NSNull()
+            dict["endDate"] = formatDate(date)
+        case .never, nil:
+            dict["endCount"] = NSNull()
+            dict["endDate"] = NSNull()
+        }
+        return dict
     }
 }
 

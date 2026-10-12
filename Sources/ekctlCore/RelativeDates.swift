@@ -109,7 +109,9 @@ public enum RelativeDates {
         }
     }
 
-    private static func componentFor(_ unit: String) -> Calendar.Component? {
+    /// Shared with `AlarmParsing`, so `+2h` in a date flag and `2h` in
+    /// `--alarms` are spelled from the same vocabulary. Expects lower case.
+    static func componentFor(_ unit: String) -> Calendar.Component? {
         switch unit {
         case "m", "min", "mins", "minute", "minutes": return .minute
         case "h", "hr", "hrs", "hour", "hours": return .hour
@@ -279,15 +281,23 @@ public enum RelativeDates {
         }
     }
 
-    /// Grafts a wall-clock time onto a day. Built from date components rather
+    /// Grafts a wall-clock time onto a day. Built from the day's date rather
     /// than by adding seconds, so "09:00" stays 09:00 on a DST-transition day.
+    /// A time the clocks skip or repeat resolves as `WallClock` describes,
+    /// identically to offset-less ISO 8601 input.
+    ///
+    /// The day is read back in Gregorian (same zone, so the same civil day)
+    /// because that's the calendar `WallClock` takes its fields in.
     private static func instant(minutesPastMidnight minutes: Int,
                                 on day: Date,
                                 calendar: Calendar) -> Date? {
-        var components = calendar.dateComponents([.year, .month, .day], from: day)
-        components.hour = minutes / 60
-        components.minute = minutes % 60
-        components.second = 0
-        return calendar.date(from: components)
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        let date = gregorian.dateComponents([.year, .month, .day], from: day)
+        guard let year = date.year, let month = date.month, let dayOfMonth = date.day
+        else { return nil }
+        return WallClock.instant(year: year, month: month, day: dayOfMonth,
+                                 hour: minutes / 60, minute: minutes % 60, second: 0,
+                                 in: calendar.timeZone)
     }
 }

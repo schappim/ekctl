@@ -84,10 +84,17 @@ public struct ConfigManager {
     /// Splits a comma-separated calendar list ("work, personal") and resolves
     /// each entry through the alias table. Backs every multi-calendar
     /// `--calendar` flag.
+    ///
+    /// A value with no entries yields no IDs, but an empty *entry* in a list ("work,"
+    /// or "work,$UNSET") is kept as an unfindable ID, so the command fails
+    /// rather than quietly using fewer calendars than the caller wrote.
     public static func resolveCalendarIDs(_ list: String) -> [String] {
-        return list
-            .split(separator: ",")
-            .map { resolveAlias($0.trimmingCharacters(in: .whitespaces)) }
+        let entries = list
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // Nothing but separators and blanks ("", ",") names no calendars.
+        guard entries.contains(where: { !$0.isEmpty }) else { return [] }
+        return entries.map(resolveAlias)
     }
 
     /// Gets the config file path (for display purposes)

@@ -5,6 +5,7 @@ Native macOS command-line tool for managing Calendar events and Reminders using 
 ## Features
 
 - List, create, update, and delete calendar events
+- Edit or delete one occurrence of a recurring event, everything from one onwards, or the whole series, and change or remove the recurrence itself
 - List, create, update, complete, and delete reminders
 - Human date input on every flag — `--start "tomorrow 9am"`, `--from today`, `--to +2w`
 - Quick date-range shortcuts: `ekctl today`, `ekctl tomorrow`, `ekctl next`
@@ -13,6 +14,7 @@ Native macOS command-line tool for managing Calendar events and Reminders using 
 - Calendar aliases (use friendly names instead of UUIDs)
 - JSON, CSV, or plain-text output (`--format json|csv|text`)
 - RFC 3339 or jq-friendly compact timestamps (`--time-format rfc3339|compact`)
+- `ekctl init` installs an agent skill for Claude Code, Codex, Pi, Antigravity, and OpenCode
 - Full EventKit integration with proper permission handling
 - Support for iCloud, Exchange, and local calendars
 
@@ -64,6 +66,34 @@ sudo cp .build/release/ekctl /usr/local/bin/
 
 On first run, macOS will prompt for access to the data the command touches — Calendars, Reminders, or both (e.g., `ekctl list calendars` lists both stores). Commands only request what they need, so a reminders-only workflow never triggers the Calendar prompt. Manage permissions in **System Settings → Privacy & Security → Calendars / Reminders**.
 
+## Agent skill
+
+`ekctl init` installs a bundled [skill](skills/ekctl/SKILL.md) that teaches AI coding agents how to drive ekctl: finding IDs, recurring-event spans, date formats, and permission prompts. The skill is embedded in the binary, so it works from a bare `/usr/local/bin/ekctl`.
+
+```bash
+ekctl init                                  # every agent detected on this Mac
+ekctl init --agent claude --agent codex     # specific agents (repeatable)
+ekctl init --agent all --scope project      # into the current project, to commit
+ekctl init --dry-run                        # report what would change, write nothing
+```
+
+Without `--agent`, it installs for each agent whose config directory exists, and errors out with the valid `--agent` values if it finds none. It never prompts.
+
+| `--agent` | User scope (default) | `--scope project` |
+| ------ | --------- | ------------- |
+| `codex` | `~/.agents/skills/ekctl/` | `.agents/skills/ekctl/` |
+| `claude` | `~/.claude/skills/ekctl/` (honours `CLAUDE_CONFIG_DIR`) | `.claude/skills/ekctl/` |
+| `pi` | `~/.pi/agent/skills/ekctl/` (honours `PI_CODING_AGENT_DIR`) | `.pi/skills/ekctl/` |
+| `antigravity` | `~/.gemini/antigravity-cli/skills/ekctl/` | `.agents/skills/ekctl/` |
+| `antigravity-ide` | `~/.gemini/config/skills/ekctl/` | `.agents/skills/ekctl/` |
+| `opencode` | `~/.config/opencode/skills/ekctl/` (honours `XDG_CONFIG_HOME`) | `.opencode/skills/ekctl/` |
+
+Each agent gets a row in `results` with an `action` of `installed`, `updated`, `unchanged`, `would-install`, `would-update`, or `failed`. Writes are atomic. An existing `SKILL.md` that differs is first copied to `SKILL.md.<timestamp>.bak` beside it (reported as `backupPath`), and an identical one is left untouched. A replaced file keeps its permissions. A `SKILL.md` that is itself a symlink is never replaced, and a project install won't follow a link that leads outside the project. Locations follow `$HOME`, as the agents themselves do, and an environment variable above set to a relative path is reported as a failure rather than quietly ignored. `--dry-run` runs the same checks as a real install, so it reports the same failures. If any agent fails, the others are still installed and the command exits `1`.
+
+Some agents read more than their own directory. OpenCode also loads `.claude/skills` and `.agents/skills`, Pi also loads `.agents/skills`, and Codex still reads the deprecated `~/.codex/skills`. So installing for several agents can show one of them the skill twice. Install just for the agents you use, and remove any old `~/.codex/skills/ekctl` copy so it doesn't go stale. Pi only loads project skills from projects you've marked trusted.
+
+Start a new agent session afterwards so it picks up the skill.
+
 ## Calendars
 
 ### List Calendars
@@ -84,13 +114,17 @@ ekctl list calendars
       "title": "Work",
       "type": "event",
       "source": "iCloud",
+      "calendarType": "calDAV",
       "color": "#0088FF",
-      "allowsModifications": true
+      "allowsModifications": true,
+      "isDefault": true
     }
   ],
   "status": "success"
 }
 ```
+
+`calendarType` is the kind of account behind the calendar: `local` (On My Mac), `calDAV` (iCloud, Google, Fastmail…), `exchange`, `subscription` (a read-only feed such as public holidays) or `birthday` (generated from Contacts). `isDefault` marks the calendar that `add event` uses when you don't pass `--calendar` (and, among reminder lists, the default list in Reminders; `add reminder` still needs `--list`).
 
 ### Create Calendar
 
@@ -174,6 +208,16 @@ Aliases are stored in `~/.ekctl/config.json`.
 ekctl list events --calendar work --from "2026-01-01T00:00:00Z" --to "2026-01-31T23:59:59Z"
 ```
 
+Every flag is optional. Leave out `--calendar` to list every calendar, `--from` to start at the beginning of today, and `--to` to stop `--days` days (default 7) after the start (`--days` and `--to` can't be combined). Ranges longer than four years work too; EventKit caps a single query at four years, so ekctl fetches them in pieces:
+
+```bash
+ekctl list events                          # every calendar, today and the next 6 days
+ekctl list events --calendar work --days 14
+ekctl list events --from 2026-03-01 --to 2026-04-01
+```
+
+A `--calendar` that was passed but names nothing (`--calendar "$UNSET"`) is an error, not a silent widening to every calendar.
+
 To fetch events from multiple calendars in a single call, pass a comma-separated list of IDs or aliases. Each event's source calendar is reported in its `calendar` field, so the merged stream is still distinguishable:
 
 ```bash
@@ -208,8 +252,8 @@ ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --search sta
         "id": "CA513B39-1659-4359-8FE9-0C2A3DCEF153",
         "title": "Work"
       },
-      "startDate": "2026-01-15T09:00:00Z",
-      "endDate": "2026-01-15T10:00:00Z",
+      "startDate": "2026-01-15T09:00:00+11:00",
+      "endDate": "2026-01-15T10:00:00+11:00",
       "location": "Conference Room A",
       "notes": null,
       "allDay": false,
@@ -219,6 +263,9 @@ ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --search sta
       ],
       "travelTimeMinutes": null,
       "hasRecurrenceRules": false,
+      "recurrenceRules": [],
+      "occurrenceDate": "2026-01-15T09:00:00+11:00",
+      "isDetached": false,
       "availability": "busy",
       "attendees": []
     }
@@ -227,12 +274,38 @@ ekctl list events --calendar work --from "$NOWISH" --to "$TOMORROW" --search sta
 }
 ```
 
+`url` appears only when the event has one; `location` and `notes` are always present, `null` when empty.
+
+For a recurring event, `recurrenceRules` describes the rule in the same terms the `--recurrence-*` flags use, so it can be read off one event and handed to another:
+
+```json
+"recurrenceRules": [
+  {
+    "frequency": "weekly",
+    "interval": 1,
+    "daysOfTheWeek": ["mon", "wed", "fri"],
+    "daysOfTheMonth": null,
+    "monthsOfTheYear": null,
+    "weeksOfTheYear": null,
+    "daysOfTheYear": null,
+    "setPositions": null,
+    "endCount": 20,
+    "endDate": null
+  }
+]
+```
+
+Every occurrence of a series is listed separately and they share one `id`, except occurrences edited on their own, whose `id` adds a `/RID=…` suffix. `occurrenceDate` says which occurrence each one is (see [Recurring events](#recurring-events)), and `isDetached` is `true` for an occurrence that was edited on its own.
+
 ### Quick date ranges: `today` / `tomorrow` / `next`
 
 Three top-level shortcuts wrap the most common `list events` queries with a pre-computed local date range. No more `date -u -v+1d` shell prelude (which is BSD-only and breaks on Linux):
 
 ```bash
-# Events occurring today (local time)
+# Events occurring today (local time), across every calendar
+ekctl today
+
+# Just one calendar
 ekctl today --calendar work
 
 # Events occurring tomorrow
@@ -248,7 +321,7 @@ ekctl next --calendar work --count 5
 ekctl next --calendar work --count 5 --days 365
 ```
 
-All three accept the same filter / format flags as `list events` (`--search`, `--availability`, `--format`, and comma-separated `--calendar`), so they compose:
+All three accept the same filter / format flags as `list events` (`--search`, `--availability`, `--format`, and comma-separated `--calendar`, which can be left out for every calendar), so they compose:
 
 ```bash
 ekctl today --calendar work,personal --availability busy --format csv
@@ -263,6 +336,9 @@ ekctl next --calendar work --search standup --count 3 --format text
 
 ```bash
 ekctl show event EVENT_ID
+
+# One occurrence of a recurring event
+ekctl show event EVENT_ID --occurrence "2026-03-16T10:00:00+11:00"
 ```
 
 ### Add Event
@@ -271,6 +347,12 @@ Basic event:
 
 ```bash
 ekctl add event --calendar work --title "Lunch" --start "2026-02-10T12:30:00Z" --end "2026-02-10T13:30:00Z"
+```
+
+Without `--calendar`, the event goes in your default calendar for new events (the one `list calendars` marks `isDefault`, set in Calendar → Settings → General):
+
+```bash
+ekctl add event --title "Dentist" --start "fri 3pm" --end "fri 4pm"
 ```
 
 With location, notes, and alarms:
@@ -283,7 +365,7 @@ ekctl add event \
   --end "2026-02-15T15:30:00Z" \
   --location "Building 2, Room 301" \
   --notes "Bring Q1 reports" \
-  --alarms "10,60"
+  --alarms "10m,1h"
 ```
 
 Recurring event (weekly):
@@ -298,6 +380,23 @@ ekctl add event \
   --recurrence-days "mon,wed,fri" \
   --recurrence-end-count 20
 ```
+
+The recurrence flags:
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--recurrence-frequency` | `daily`, `weekly`, `monthly` or `yearly` (and `none` on `update event`) |
+| `--recurrence-interval` | Every N periods — `2` with `weekly` is fortnightly |
+| `--recurrence-end-count` | Stop after N occurrences |
+| `--recurrence-end-date` | Stop on this date, including it: a plain date such as `2026-12-01` keeps that day's occurrence (`none` on `update event` makes the series open-ended) |
+| `--recurrence-days` | Days of the week: `mon,wed`; `1mon` is the first Monday, `-1fri` the last Friday (monthly and yearly rules) |
+| `--recurrence-days-of-month` | `1,15`, or `-1` for the last day (monthly rules) |
+| `--recurrence-months` | `1-12` or names: `jan,jul` (yearly rules) |
+| `--recurrence-weeks-of-year` | `1-53`, or negative from the end (yearly rules) |
+| `--recurrence-days-of-year` | `1-366`, or negative from the end (yearly rules) |
+| `--recurrence-set-positions` | Picks among the days the other flags select: with `--recurrence-frequency monthly`, `--recurrence-days mon,tue,wed,thu,fri --recurrence-set-positions -1` is the last weekday of the month |
+
+Values are checked before anything is saved: a typo, a zero, an out-of-range number, or a flag that doesn't apply to the frequency (say `--recurrence-months` on a weekly rule, which EventKit would silently ignore) is an error that names the problem. Negative values work with or without `=` (`--recurrence-days -1fri`).
 
 With travel time:
 
@@ -324,8 +423,8 @@ ekctl add event \
       "id": "CA513B39-1659-4359-8FE9-0C2A3DCEF153",
       "title": "Work"
     },
-    "startDate": "2026-02-10T12:30:00Z",
-    "endDate": "2026-02-10T13:30:00Z",
+    "startDate": "2026-02-10T12:30:00+11:00",
+    "endDate": "2026-02-10T13:30:00+11:00",
     "location": null,
     "notes": null,
     "allDay": false
@@ -356,6 +455,14 @@ ekctl update event EVENT_ID \
   --url "https://example.com/meeting"
 ```
 
+Move an event to another calendar with `--calendar` (an ID or alias):
+
+```bash
+ekctl update event EVENT_ID --calendar personal
+```
+
+Updating a recurring event takes `--occurrence` and `--span`, and can change the recurrence itself; see [Recurring events](#recurring-events).
+
 **Output:**
 
 ```json
@@ -381,24 +488,121 @@ ekctl update event EVENT_ID \
     ],
     "travelTimeMinutes": 20,
     "hasRecurrenceRules": false
-  }
+  },
+  "span": "this"
 }
+```
+
+### Recurring events
+
+Every occurrence of a recurring series shares one event ID; `list events` shows each occurrence with that same `id` and its own `startDate`. So for a recurring event, an ID alone doesn't say *which* meeting you mean. Two flags on `update event` and `delete event` do:
+
+- `--occurrence DATE` picks the occurrence: pass its `startDate` from `list events` (or its `occurrenceDate`, the slot it was originally scheduled in, if it has since been moved). Any [date format](#date-format) works.
+- `--span this|future|all` says how far the change reaches: just that occurrence (the default), that occurrence and every later one, or the whole series.
+
+```bash
+# Rename just the 16 March standup
+ekctl update event EVENT_ID --occurrence "2026-03-16T10:00:00+11:00" --title "Standup (demo day)"
+
+# Move every standup from 16 March onwards to 10:30
+ekctl update event EVENT_ID --occurrence "2026-03-16T10:00:00+11:00" --span future \
+  --start "2026-03-16T10:30:00+11:00" --end "2026-03-16T10:45:00+11:00"
+
+# Rename the whole series
+ekctl update event EVENT_ID --span all --title "Daily sync"
+
+# Cancel one occurrence, or the series from a date onwards, or all of it
+ekctl delete event EVENT_ID --occurrence "2026-03-16T10:00:00+11:00"
+ekctl delete event EVENT_ID --occurrence "2026-03-16T10:00:00+11:00" --span future
+ekctl delete event EVENT_ID --span all
+```
+
+A recurring event's ID without `--occurrence` is refused unless the span is `all`. So is an `--occurrence` that matches two occurrences (one moved onto another's slot); the error lists both IDs to choose from. EventKit resolves a bare series ID to the series' *first* occurrence, so before this check, `delete event` on a listed weekly meeting silently deleted the first meeting of the series instead of the one you were looking at.
+
+How the spans behave:
+
+- **`this`** edits only the chosen occurrence. It becomes *detached*: it keeps its own changes, reports `isDetached: true`, and gets an ID of its own (the series ID plus `/RID=…`), which also works directly.
+- **`future`** splits the series at the chosen occurrence. Earlier occurrences keep the old ID; the chosen occurrence and those after it become a new series with a new ID, reported in the output.
+- **`all`** applies to the whole series. With `--occurrence`, new `--start` / `--end` times are measured against that occurrence and the same shift is applied to the whole series. So moving the 16 March meeting to 11:00 moves every occurrence to 11:00; it doesn't make the series start on 16 March. The shift is in clock time in the event's own time zone, so it lands at the same time of day either side of a daylight-saving change. Occurrences edited on their own keep their own times, except the one you addressed, which goes where you said.
+
+Moving a series' times, or re-saving its rule with a new end, makes EventKit forget which occurrences had been deleted, so they reappear; ekctl notices and deletes them again, reporting `recancelledOccurrences`. A move onto a different weekday is refused for a rule pinned to particular days (`--recurrence-days mon`), since EventKit would keep repeating on the old days; pass the new `--recurrence-days` with it. The same goes for a different day of the month with `--recurrence-days-of-month`, and so on. Moving a Monday series a week later is fine.
+
+Changing the recurrence itself uses the same `--recurrence-*` flags as `add event`, and needs `--span future` or `--span all` on an event that already repeats (with `this`, EventKit would just detach the occurrence). A `--recurrence-frequency` starts a fresh rule, keeping only the old end unless you give a new one. Without one, each flag replaces just that part of the existing rule, and a series ending after N occurrences still ends after N in total when split with `--span future`. Changing the rule discards occurrences that were edited or deleted individually, as Calendar does:
+
+```bash
+# End the series after 10 occurrences, keeping everything else
+ekctl update event EVENT_ID --span all --recurrence-end-count 10
+
+# From the 16 March occurrence on, switch to fortnightly
+ekctl update event EVENT_ID --occurrence "2026-03-16T10:00:00+11:00" --span future \
+  --recurrence-frequency weekly --recurrence-interval 2
+
+# Stop repeating: keep only the first occurrence
+ekctl update event EVENT_ID --span all --recurrence-frequency none
+
+# Make a one-off event repeat
+ekctl update event EVENT_ID --recurrence-frequency monthly --recurrence-days=-1fri
+```
+
+Moving a recurring event to another calendar needs `--span all`, because EventKit can only move a series as a whole. Saving a single occurrence into another calendar moves every occurrence anyway.
+
+One EventKit quirk to know about: a series split with `--span future` stays linked to the series it came from, and some later `--span all` changes to the original reach into it. Deleting the original with `--span all` deletes the split-off series too, and moving the original's times can move it and drop some of its occurrences. EventKit offers no way to prevent this, so ekctl compares the calendar before and after every series-wide change and reports any other series that changed in `alsoAffected`, with a note in `warnings`:
+
+```json
+"alsoAffected": [
+  { "id": "ABC123:SPLIT789", "title": "Standup", "change": "deleted", "occurrencesBefore": 6, "occurrencesAfter": 0 }
+],
+"warnings": ["EventKit also changed another series in this calendar: 'Standup', ..."]
 ```
 
 ### Alarms and travel time
 
-`--alarms` takes comma-separated minutes and **replaces** every existing alarm on
-the event (it does not append). A bare number means minutes *before* the start; a
-leading `+` means minutes *after*:
+`--alarms` takes comma-separated offsets from the start and **replaces** every
+existing alarm on the event (it does not append). Each offset is a number with an
+optional unit: `m` (minutes, the default), `h`, `d` or `w`, case-insensitive. The
+longer spellings date offsets accept (`min`, `hr`, `day`, `week` and plurals) work
+too. A bare or negative offset is *before* the start; a leading `+` means *after*:
 
 ```bash
-ekctl update event EVENT_ID --alarms "10,60"   # 10 min and 1 hour before
-ekctl update event EVENT_ID --alarms "+15"     # 15 min after the start
-ekctl update event EVENT_ID --alarms "0"       # at the start
+ekctl update event EVENT_ID --alarms "10,60"        # 10 min and 1 hour before
+ekctl update event EVENT_ID --alarms "15m,1h,1d"    # 15 min, 1 hour and 1 day before
+ekctl update event EVENT_ID --alarms "+15m"         # 15 min after the start
+ekctl update event EVENT_ID --alarms "1.5h"         # 90 min before
+ekctl update event EVENT_ID --alarms "0"            # at the start
+ekctl update event EVENT_ID --alarms none           # remove every alarm
 ```
 
+A bare number is minutes, so lists written before units existed mean what they
+always did. `none` or an empty string (`--alarms ""`) means no alarms. On `update
+event` that clears them; on `add event` it just asks for none, and the calendar's
+own default alarm may still apply (see below). An offset that starts with `-` works
+with or without `=` (`--alarms -15` or `--alarms=-15`), though since `-15` and `15`
+mean the same thing, it's simpler to leave the sign off.
+
+To keep an event's alarms and add more, use `--add-alarms` on `update event`. It takes
+the same format, and skips an alarm the event already has:
+
+```bash
+ekctl update event EVENT_ID --add-alarms 1d         # keep the existing alarms, add a day-before one
+```
+
+`--alarms` and `--add-alarms` can't be combined in one command.
+
+Every entry has to be valid, or the command fails *before* touching the event and
+names the entry it rejected (`Invalid --alarms value. "1hour30" is not an alarm
+offset...`). Nothing is silently skipped. In particular:
+
+- **Whole minutes only.** `1.5h` and `0.25h` are fine, but `1.5m` and `30s` are
+  rejected: event output reports alarms in whole minutes, so a finer alarm wouldn't
+  read back as what you set.
+- **At most a year either side** (365 days, so `52w` and `365d` are fine). EventKit
+  would accept more, but an offset that large is almost always the wrong unit, such
+  as `10080h` typed where `10080m` (a week) was meant.
+- Units can't be combined (`1h30m`); write `90m` or `1.5h`. Months and years are
+  not units, for the same reason as in [date offsets](#shorthand).
+
 Both fields are echoed back in the event JSON, in the same units the flags accept,
-so output round-trips into input:
+so output reads back as input (mind the sign for alarms after the start, below):
 
 ```json
 "alarms": [
@@ -409,8 +613,10 @@ so output round-trips into input:
 "travelTimeMinutes": 20
 ```
 
-`minutesBeforeStart` is negative for an alarm that fires *after* the start, matching
-the `+` flag form. Alarms set outside ekctl may be absolute rather than relative, in
+`minutesBeforeStart` is negative for an alarm that fires *after* the start, and goes
+back in with a `+`: a rendered `-15` is `--alarms "+15"`. Passing `-15` back as-is
+means 15 minutes *before*, because a leading `-` has always meant before on this
+flag. Alarms set outside ekctl may be absolute rather than relative, in
 which case they carry a `date` instead. EventKit does not preserve the order alarms
 were supplied in, so read them as a set.
 
@@ -431,15 +637,25 @@ Two things worth knowing:
 ekctl delete event EVENT_ID
 ```
 
+For a recurring event, add `--occurrence` and/or `--span` (see [Recurring events](#recurring-events)).
+
 **Output:**
 
 ```json
 {
   "status": "success",
   "message": "Event 'Team Meeting' deleted successfully",
-  "deletedEventID": "ABC123:DEF456"
+  "deletedEventID": "ABC123:DEF456",
+  "span": "this",
+  "deletedEvent": {
+    "id": "ABC123:DEF456",
+    "title": "Team Meeting",
+    "startDate": "2026-01-15T09:00:00+11:00"
+  }
 }
 ```
+
+`deletedEvent` (abridged above) is the deleted event as it was just before deletion, with the same fields as `show event`.
 
 ## Finding Free Time
 
@@ -578,7 +794,7 @@ ekctl list reminders --list personal --search milk
         "id": "4E367C6F-354B-4811-935E-7F25A1BB7D39",
         "title": "Reminders"
       },
-      "dueDate": "2026-01-20T17:00:00Z",
+      "dueDate": "2026-01-20T17:00:00+11:00",
       "completed": false,
       "priority": 0,
       "notes": null
@@ -634,7 +850,7 @@ ekctl add reminder \
       "id": "4E367C6F-354B-4811-935E-7F25A1BB7D39",
       "title": "Reminders"
     },
-    "dueDate": "2026-01-25T09:00:00Z",
+    "dueDate": "2026-01-25T09:00:00+11:00",
     "completed": false,
     "priority": 0,
     "notes": null
@@ -717,10 +933,11 @@ ekctl delete reminder REMINDER_ID
 
 ## Date Format
 
-All date **inputs** (`--from`, `--to`, `--start`, `--end`, `--due`, `--recurrence-end-date`) accept either a full ISO 8601 timestamp or a shorthand. The two are interchangeable everywhere:
+All date **inputs** (`--from`, `--to`, `--start`, `--end`, `--due`, `--recurrence-end-date`, `--occurrence`) accept an ISO 8601 timestamp, with or without a UTC offset, or a shorthand. They are interchangeable everywhere:
 
 ```bash
 ekctl add event --calendar work --title Standup --start "tomorrow 9am" --end "tomorrow 9:15am"
+ekctl add event --calendar work --title Review --start 2026-02-23T14:00 --end 2026-02-23T15:00
 ekctl list events --calendar work --from today --to +1w
 ekctl add reminder --list personal --title "Call the dentist" --due "fri 5pm"
 ```
@@ -747,17 +964,28 @@ A bare day resolves to the **start** of that day. That's what `--from tomorrow` 
 
 A bare number like `9` is **rejected**, not guessed — it could be 9am or the 9th, and being wrong there books a meeting three weeks out. Write `9am` or `09:00`. Months and years are not offset units for the same reason: `+3m` is unambiguously 3 minutes.
 
-Times are grafted onto days by wall clock, so `tomorrow 09:00` is 9am even on the day the clocks change.
+Times are grafted onto days by wall clock, so `tomorrow 09:00` is 9am even on the day the clocks change. A time the clocks skip or repeat is resolved the same way as [ISO 8601 without an offset](#iso-8601).
 
 ### ISO 8601
 
-Accepted with any of these timezone suffixes, with or without fractional seconds. ISO is matched first, so a timestamp always parses as itself:
+Accepted with any of these timezone suffixes, with or without fractional seconds, or with none at all. ISO is matched before the shorthand, and a timestamp with an offset is matched before one without, so a timestamp always parses as itself:
 
 | Format | Example | Description |
 | -------- | --------- | ------------- |
 | UTC | `2026-01-15T09:00:00Z` | 9:00 AM UTC |
 | Offset with colon | `2026-01-15T09:00:00+10:00` | 9:00 AM AEST (RFC 3339) |
 | Compact offset | `2026-01-15T09:00:00+1000` | Same instant, jq-style `%z` form |
+| No offset | `2026-01-15T09:00`, `2026-01-15T09:00:00`, `2026-01-15T09:00:00.250` | 9:00 AM in your Mac's time zone |
+| No offset, space | `2026-01-15 09:00:00` | Same, in the form `date '+%F %T'` and databases print |
+
+Without an offset, a timestamp is local wall-clock time, read in the Gregorian calendar whatever your region's calendar is set to. Every field has a fixed width (`09`, not `9`) and must be in range: `24:00`, `09:60`, `09:00:60` and `2026-02-31T09:00` are rejected rather than rolled over into the next hour, day or month. (`2026-01-15 9:00`, with a one-digit hour, still works as [shorthand](#shorthand), which has no seconds.)
+
+Around a daylight-saving change, a local time can name no instant or two:
+
+- **Skipped** (spring forward): the time moves forward by the length of the gap. In New York, `2026-03-08T02:30` is 3:30 AM EDT.
+- **Repeated** (fall back): the first occurrence wins. In New York, `2026-11-01T01:30` is 1:30 AM EDT (`-04:00`), not the EST hour that follows.
+
+The shorthand resolves times the same way, so `--start "tomorrow 2:30am"` and `--start 2026-03-08T02:30` always agree. Add an offset when you need the other occurrence of a repeated hour.
 
 Timestamps in **output** are rendered in your local timezone and are always valid input, so values round-trip between commands. The rendering is controlled by `--time-format` on every command:
 
@@ -865,7 +1093,7 @@ ekctl list events --calendar work --from "$TODAY" --to "$TOMORROW" --format text
 
 ## Error Handling
 
-All errors return JSON with `status: "error"`:
+All errors return JSON with `status: "error"` (or that object rendered as CSV or text under `--format`), except command lines the argument parser itself rejects; see the exit codes below:
 
 ```json
 {
@@ -878,9 +1106,10 @@ Common errors:
 
 - `Permission denied`: Grant access in System Settings → Privacy & Security → Calendars/Reminders
 - `Calendar not found`: Check calendar ID with `ekctl list calendars`
-- `Invalid --<flag> date format`: the message echoes the value it rejected. Use an ISO 8601 timestamp (`2026-01-15T09:00:00Z`, `+10:00` or `+1000` offsets) or a shorthand such as `tomorrow 9am` or `+2h` — see [Date Format](#date-format)
+- `Invalid --<flag> date format`: the message echoes the value it rejected. Use an ISO 8601 timestamp (`2026-01-15T09:00:00Z`, `+10:00` or `+1000` offsets, or no offset for local time) or a shorthand such as `tomorrow 9am` or `+2h` — see [Date Format](#date-format)
+- `Invalid --alarms value`: the message names the entry it rejected and why — see [Alarms and travel time](#alarms-and-travel-time)
 
-Exit codes: `0` success, `1` failure, `2` permission denied, `64` invalid usage (bad flags/values).
+Exit codes: `0` success, `1` failure (any `"status": "error"` output, including a refused or not-found event), `2` permission denied, `64` the argument parser rejected the command line (unknown flag, missing value, a value outside a flag's fixed choices such as `--span sideways`, or a non-number where a number is expected), with plain usage text rather than JSON. So `ekctl delete event "$ID" && echo done` only says done when something was deleted.
 
 ## Help
 

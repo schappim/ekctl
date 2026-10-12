@@ -27,6 +27,10 @@ public struct JSONOutput {
         ])
     }
 
+    /// Whether this is an error response. The CLI exits non-zero for these,
+    /// so `ekctl delete event … && next-step` doesn't carry on after a refusal.
+    public var isError: Bool { data["status"] as? String == "error" }
+
     /// Converts the output to a JSON string
     public func toJSON() -> String {
         do {
@@ -152,7 +156,7 @@ enum OutputFormatter {
     /// Singular keys → wrap in a one-element list.
     /// Otherwise → treat the whole dict as a single row.
     static func primaryRows(in data: [String: Any]) -> [[String: Any]] {
-        let listKeys = ["events", "reminders", "calendars", "aliases", "slots"]
+        let listKeys = ["events", "reminders", "calendars", "aliases", "slots", "results"]
         for key in listKeys {
             if let list = data[key] as? [[String: Any]] { return list }
         }
